@@ -4,6 +4,8 @@
 
 #include <fc/exception/exception.hpp>
 
+#include "utils.hpp"
+
 struct public_key_address
   {
   fc::ecc::public_key_data key;
@@ -12,7 +14,7 @@ struct public_key_address
   public_key_address(const fc::ecc::public_key_data& k)
     {
     key = k;
-    check = uint32_t(fc::city_hash64( (char*)&key, sizeof(key) ));
+    check = uint32_t(fc::hash64( (char*)&key, sizeof(key) ));
     }
 
   /** Allows to validate given keyStr before creating a public key object.
@@ -20,11 +22,17 @@ struct public_key_address
 
       Returns true if given key is ok, false otherwise.
    */
-  static bool is_valid(const std::string& keyStr, bool* keySemanticallyValid = nullptr)
+  static bool is_valid(const std::string& inputKeyStr, bool* keySemanticallyValid = nullptr)
     {
+    /// \warning public key checker/decoder asserts if input string contains national characters
+    std::string keyStr;
+
+    Utils::convertToASCII(inputKeyStr, &keyStr);
+
     bool status = false;
-    if (keySemanticallyValid)
+    if(keySemanticallyValid != nullptr)
       *keySemanticallyValid = false;
+
     try
       {
       std::vector<char> bin = fc::from_base58(keyStr);
@@ -41,7 +49,7 @@ struct public_key_address
         if (checker.valid() && keySemanticallyValid)
         {
           std::string public_key_string_check = public_key_address(rawData);
-          if (public_key_string_check == keyStr)
+          if (public_key_string_check == inputKeyStr)
           {
             *keySemanticallyValid = true;
           }
@@ -57,6 +65,21 @@ struct public_key_address
 
     return status;
     }
+
+  /** Convert public key string to public key data
+      Returns false if publicKeyString is not valid
+   */
+  static bool convert(const std::string& publicKeyString/*in*/, fc::ecc::public_key* publicKeyData/*out*/)
+  {
+    bool publicKeySemanticallyValid;
+    if (is_valid(publicKeyString, &publicKeySemanticallyValid) && publicKeySemanticallyValid)
+    {
+        public_key_address key_address(publicKeyString);
+        *publicKeyData = key_address.key;
+        return true;
+    }
+    return false;
+  }
 
   /** Allows to construct object of this class from PREVIOUSLY successfully validated key string.
       \see is_valid method for details.
@@ -76,5 +99,5 @@ struct public_key_address
     memcpy( (char*)&data, (char*)&key, 33);
     memcpy( ((char*)&data) + 33, (char*)&check, 4);
     return fc::to_base58( (char*)&data, 37);
-    }
+    }  
   };

@@ -6,7 +6,6 @@
 #include "mailfieldswidget.hpp"
 #include "moneyattachementwidget.hpp"
 #include "utils.hpp"
-#include "Mailbox.hpp"
 
 #include <bts/profile.hpp>
 
@@ -18,7 +17,6 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QMimeData>
-#include <QTextDocumentFragment>
 #include <QToolBar>
 #include <QToolButton>
 
@@ -50,13 +48,13 @@ class TDocumentTransform
       const TPhysicalMailMessage& srcMsg, QTextDocument* doc);
 
   private:
-    QTextCursor replace(const char* textToFind, const QString& replacement,
-      const QTextCursor& startPos = QTextCursor());
-    QTextCursor replace(const char* textToFind, const QTextDocumentFragment& replacement,
-      const QTextCursor& startPos = QTextCursor());
     /// Allows to remove whole line containing given text.
     void removeContainingLine(const char* textToFind, const QTextCursor& startPos = QTextCursor());
     QTextCursor find(const char* textToFind, const QTextCursor& startPos);
+    /** Remove nested html header from the message body.
+    RepliedMailPattern.html already contains html header
+    */
+    void removeHtmlHeader(QString &body);
   /// Class attributes:
   private:
     QTextDocument* Doc;
@@ -105,69 +103,40 @@ TDocumentTransform::Do(TLoadForm loadForm, const TStoredMailMessage& msgHeader,
 
   QByteArray contents = htmlPattern.readAll();
   QString patternHtml(contents);
-  doc->setHtml(patternHtml);
 
   QString senderText(Utils::toString(msgHeader.from_key, Utils::FULL_CONTACT_DETAILS));
   QString sentDate(Utils::toQDateTime(msgHeader.from_sig_time).toString(Qt::DefaultLocaleShortDate));
   QString toList(Utils::makeContactListString(srcMsg.to_list, ';', Utils::FULL_CONTACT_DETAILS));
   QString ccList(Utils::makeContactListString(srcMsg.cc_list, ';', Utils::FULL_CONTACT_DETAILS));
 
-  replace("$$SENDER$$", senderText);
-  replace("$$SENT_DATE$$", sentDate);
-  replace("$$TO_RECIPIENTS$$", toList);
+  patternHtml.replace("$$SENDER$$", senderText);
+  patternHtml.replace("$$SENT_DATE$$", sentDate);
+  patternHtml.replace("$$TO_RECIPIENTS$$", toList);
   
-  if(ccList.isEmpty())
-    removeContainingLine("$$CC_RECIPIENTS$$");
-  else
-    replace("$$CC_RECIPIENTS$$", ccList);
+  if (!ccList.isEmpty())
+  {
+    patternHtml.replace("$$CC_RECIPIENTS$$", ccList);
+  }
+  patternHtml.replace("$$SUBJECT$$", newSubject);
 
-  replace("$$SUBJECT$$", newSubject);
-
+  QString body = QString(srcMsg.body.c_str());
+  /** Even forcing the following conversion:
   QTextDocumentFragment tf(QTextDocumentFragment::fromHtml(QString(srcMsg.body.c_str())));
+  and next
   replace("$$SOURCE_BODY$$", tf);
-  
-  return newSubject;
-  }
-
-inline
-QTextCursor TDocumentTransform::replace(const char* textToFind, const QString& replacement,
-  const QTextCursor& startPos /*= QTextCursor()*/)
-  {
-  /** \warning It is impossible to use here QTextDocumentFragment::fromPlainText and next pass
-      it to another replace version, since formatting gets broken (new instered text uses formatting
-      from begin of block instead of this one which was specified for replaced text).
-      It looks like it is some bug in insertFragment (where fragment was built from plain text).
+  Html tags doesn't work properly for $$SOURCE_BODY$$" section.
+  Therefore first replace section $$...$$ in the patternHtml and next insert
+  html document to QTextDocument
   */
-  QTextCursor foundPos = find(textToFind, startPos);
-
-  if(foundPos.isNull() == false && foundPos.hasSelection())
-    {
-    auto cf = foundPos.charFormat();
-    foundPos.beginEditBlock();
-    foundPos.removeSelectedText();
-    foundPos.insertText(replacement, cf);
-    foundPos.endEditBlock();
-    }
-
-  return foundPos;
+  removeHtmlHeader(body);
+  patternHtml.replace("$$SOURCE_BODY$$", body);
+  doc->setHtml(patternHtml);
+  if (ccList.isEmpty())
+  {
+    removeContainingLine("$$CC_RECIPIENTS$$");
   }
 
-inline
-QTextCursor 
-TDocumentTransform::replace(const char* textToFind, const QTextDocumentFragment& replacement,
-  const QTextCursor& startPos /*= QTextCursor()*/)
-  {
-  QTextCursor foundPos = find(textToFind, startPos);
-
-  if(foundPos.isNull() == false && foundPos.hasSelection())
-    {
-    foundPos.beginEditBlock();
-    foundPos.removeSelectedText();
-    foundPos.insertFragment(replacement);
-    foundPos.endEditBlock();
-    }
-
-  return foundPos;
+  return newSubject;
   }
 
 void TDocumentTransform::removeContainingLine(const char* textToFind,
@@ -197,16 +166,42 @@ QTextCursor TDocumentTransform::find(const char* textToFind, const QTextCursor& 
 
 } ///namespace
 
+void TDocumentTransform::removeHtmlHeader(QString &body)
+{
+  /// Remove nested html header
+  int pos = 0;
+  /// find start of body section
+  pos = body.indexOf("<body", pos);
+  pos = body.indexOf(">", pos);
+  /// remove <head.. and <body..
+  body.remove(0, pos + 1);
+
+  /// Find end of body section.
+  /// Set position to end of the document not to search the entire message
+  pos = body.size() - 100/*sizeof(<body><head> + reserve)*/;
+  pos = body.indexOf("</body>", pos);
+  assert(pos != -1);
+  if (pos != -1)
+  {
+    /// remove </body..</html.. section
+    body.remove(pos, body.size() - pos);
+  }
+}
+
 MailEditorMainWindow::MailEditorMainWindow(ATopLevelWindowsContainer* parent, AddressBookModel& abModel,
   IMailProcessor& mailProcessor, bool editMode) :
   ATopLevelWindow(parent),
   ui(new Ui::MailEditorWindow()),
+  _parent(parent),
   ABModel(abModel),
-  MailProcessor(mailProcessor),
+  MailProcessor(mailProcessor), 
   FontCombo(nullptr),
   EditMode(editMode)
   {
   ui->setupUi(this);
+  ui->remoteContentAlert->initial(this);
+  ui->messageEdit->initial(this);
+  _msg_type = IMailProcessor::TMsgType::Normal;
 
   /** Disable these toolbars by default. They should be showed up on demand, when given action will
       be trigerred.
@@ -216,6 +211,7 @@ MailEditorMainWindow::MailEditorMainWindow(ATopLevelWindowsContainer* parent, Ad
   ui->editToolBar->hide();
   ui->adjustToolbar->hide();
   ui->formatToolBar->hide();
+  ui->mailToolBar->hide();
 
   MoneyAttachement = new TMoneyAttachementWidget(ui->moneyAttachementToolBar);
   ui->moneyAttachementToolBar->addWidget(MoneyAttachement);
@@ -256,6 +252,8 @@ MailEditorMainWindow::MailEditorMainWindow(ATopLevelWindowsContainer* parent, Ad
     ui->actionMailFields->setMenu(mailFieldsMenu);
     ui->mainToolBar->insertAction(ui->actionShowFormatOptions, ui->actionMailFields);
     }
+  else
+    ui->mailToolBar->show();
 
   setupEditorCommands();
 
@@ -280,7 +278,8 @@ MailEditorMainWindow::MailEditorMainWindow(ATopLevelWindowsContainer* parent, Ad
     SLOT(setEnabled(bool)));
   connect(ui->messageEdit->document(), SIGNAL(modificationChanged(bool)), this,
     SLOT(setWindowModified(bool)));
-  connect(ui->messageEdit, SIGNAL(addAttachments(QStringList)), this, SLOT(onAddAttachments(QStringList)));
+  connect(ui->messageEdit, SIGNAL(attachmentAdded(const QStringList&)), this,
+    SLOT(onFileAttachmentAdded(const QStringList&)));
 
 #ifndef QT_NO_CLIPBOARD
   connect(QApplication::clipboard(), SIGNAL(dataChanged()), this, SLOT(onClipboardDataChanged()));
@@ -311,17 +310,31 @@ void MailEditorMainWindow::LoadMessage(Mailbox* mailbox, const TStoredMailMessag
   TRecipientPublicKeys sourceToList, sourceCCList;
   QString newSubject;
 
+  _src_msg = srcMsg;
+
+  ui->messageEdit->setOpenExternalLinks(true);
+  ui->messageEdit->setOpenLinks(true);
+
   switch(loadForm)
     {
     case TLoadForm::Draft:
       DraftMessage = srcMsgHeader;
       /// Now load source message contents into editor controls.
       loadContents(srcMsgHeader.from_key, srcMsg);
+      _src_msg_id = srcMsg.src_msg_id;
+      if(srcMsgHeader.isTempReply())
+        _msg_type = IMailProcessor::TMsgType::Reply;
+      else if(srcMsgHeader.isTempForwa())
+        _msg_type = IMailProcessor::TMsgType::Forward;
+      else
+        _msg_type = IMailProcessor::TMsgType::Normal;
       break;
     case TLoadForm::ReplyAll:
       transformRecipientList(srcMsgHeader.from_key, srcMsg.to_list, srcMsg.cc_list);
       newSubject = transformMailBody(loadForm, srcMsgHeader, srcMsg);
       MailFields->SetSubject(newSubject);
+      _src_msg_id = srcMsgHeader.digest;
+      _msg_type = IMailProcessor::TMsgType::Reply;
       break;
     case TLoadForm::Reply:
       if(srcMsg.to_list.empty() == false)
@@ -329,35 +342,36 @@ void MailEditorMainWindow::LoadMessage(Mailbox* mailbox, const TStoredMailMessag
       transformRecipientList(srcMsgHeader.from_key, sourceToList, sourceCCList);
       newSubject = transformMailBody(loadForm, srcMsgHeader, srcMsg);
       MailFields->SetSubject(newSubject);
+      _src_msg_id = srcMsgHeader.digest;
+      _msg_type = IMailProcessor::TMsgType::Reply;
       break;
     case TLoadForm::Forward:
       FileAttachment->LoadAttachedFiles(srcMsg.attachments);
       newSubject = transformMailBody(loadForm, srcMsgHeader, srcMsg);
       MailFields->SetSubject(newSubject);
+      _src_msg_id = srcMsgHeader.digest;
+      _msg_type = IMailProcessor::TMsgType::Forward;
       break;
     default:
       assert(false);
     }
   
   ui->messageEdit->moveCursor(QTextCursor::MoveOperation::Start, QTextCursor::MoveMode::MoveAnchor);
-  onFileAttachementTriggered( FileAttachment->hasAttachment() );
-  
-  if ( !EditMode && FileAttachment->hasAttachment())
-    {
-    mailbox->previewImages(ui->messageEdit);
-    ui->messageEdit->document()->setModified(false);
+  onFileAttachementTriggered( FileAttachment->hasAttachment() ); 
     }
-  }
 
 void MailEditorMainWindow::closeEvent(QCloseEvent *e)
   {
   if(maybeSave())
-  {
+    {
+    MailFields->closeEvent();
     e->accept();
     ATopLevelWindow::closeEvent(e);
-  }
+    }
   else
+    {
     e->ignore();
+    }
   }
 
 bool MailEditorMainWindow::maybeSave()
@@ -370,7 +384,20 @@ bool MailEditorMainWindow::maybeSave()
     QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
   
   if(ret == QMessageBox::Save)
+    {
+    auto idents = bts::get_profile()->identities();
+
+    if(idents.empty())
+      {
+      QMessageBox::StandardButton ret = QMessageBox::warning(this, tr("Keyhotee"),
+        tr("Cannot save this draft. No Identity is present.\nPlease create an Identity to save this draft"),
+        QMessageBox::Ok);
+
+      return false;
+      }
+
     return onSave();
+    }
   else
   if(ret == QMessageBox::Cancel)
     return false;
@@ -401,14 +428,16 @@ void MailEditorMainWindow::setupEditorCommands()
   FontSize->setCurrentIndex(FontSize->findText(QString::number(QApplication::font().pointSize())));
   }
 
-bool MailEditorMainWindow::isMsgSizeOK(const TPhysicalMailMessage& srcMsg)
+bool MailEditorMainWindow::checkMsgSize(const TPhysicalMailMessage& srcMsg)
 {
-  int msg_size = srcMsg.subject.size() + srcMsg.body.size();
-  for(int i=0; i<srcMsg.attachments.size(); i++)
+  size_t msg_size = srcMsg.subject.size() + srcMsg.body.size();
+  for(size_t i=0; i<srcMsg.attachments.size(); ++i)
     msg_size += srcMsg.attachments[i].body.size();
+
   if(msg_size > 1024*1024)
   {
-    QMessageBox::warning(this, tr("Warning"), tr("Message size limit exceeded.\nMessage with attachments can not be larger than 1 MB."));
+    QMessageBox::warning(this, tr("Warning"),
+      tr("Message size limit exceeded.\nMessage with attachments can not be larger than 1 MB."));
     return false;
   }
   return true;
@@ -465,6 +494,8 @@ bool MailEditorMainWindow::prepareMailMessage(TPhysicalMailMessage* storage)
   MailFields->FillRecipientLists(&storage->to_list, &storage->cc_list, &storage->bcc_list);
   storage->body = ui->messageEdit->document()->toHtml().toStdString();
 
+  storage->src_msg_id = _src_msg_id;
+
   typedef TFileAttachmentWidget::TFileInfoList TFileInfoList;
   TFileInfoList brokenFileInfos;
   if(FileAttachment->GetAttachedFiles(&storage->attachments, &brokenFileInfos) == false)
@@ -489,7 +520,8 @@ void MailEditorMainWindow::loadContents(const TRecipientPublicKey& senderId,
   {
   MailFields->LoadContents(senderId, srcMsg);
   FileAttachment->LoadAttachedFiles(srcMsg.attachments);
-  ui->messageEdit->setText(QString(srcMsg.body.c_str()));
+
+  ui->messageEdit->loadContents(srcMsg.body.c_str(), srcMsg.attachments);
   }
 
 void MailEditorMainWindow::transformRecipientList(const TRecipientPublicKey& senderId,
@@ -552,36 +584,28 @@ void MailEditorMainWindow::toggleReadOnlyMode()
   ui->messageEdit->setReadOnly(EditMode == false);
   ui->formatToolBar->setEnabled(EditMode);
   ui->adjustToolbar->setEnabled(EditMode);
+
+  auto profile = bts::application::instance()->get_profile();
+  ui->mailToolBar->setDisabled(EditMode || profile->identities().empty());
   }
 
 bool MailEditorMainWindow::onSave()
   {
-  ui->messageEdit->document()->setModified(false);
   TPhysicalMailMessage msg;
   if(prepareMailMessage(&msg))
     {
-      if(!isMsgSizeOK(msg))
-      {
-        ui->messageEdit->document()->setModified(true);
-        return false;
-      }
+    if(checkMsgSize(msg) == false)
+      return false;
+
     const IMailProcessor::TIdentity& senderId = MailFields->GetSenderIdentity();
 
-    auto app = bts::application::instance();
-    auto profile = app->get_profile();
-    auto idents = profile->identities();
-
-    if(0 == idents.size())
-      {
-      QMessageBox::StandardButton ret = QMessageBox::warning(this, tr("Keyhotee"),
-      tr("Cannot save this draft. No Identity is present.\nPlease create an Identity to save this draft"),
-      QMessageBox::Ok);
-      return false;
-      }
     //DLN we should probably add get_pointer implementation to fc::optional to avoid code like this
     TStoredMailMessage* oldMessage = DraftMessage.valid() ? &(*DraftMessage) : nullptr;
-    DraftMessage = MailProcessor.Save(senderId, msg, oldMessage);
+    DraftMessage = MailProcessor.Save(senderId, msg, _msg_type, oldMessage);
     }
+
+  ui->messageEdit->document()->setModified(false);
+
   return true;
   }
 
@@ -711,10 +735,11 @@ void MailEditorMainWindow::on_actionSend_triggered()
   TPhysicalMailMessage msg;
   if(prepareMailMessage(&msg))
     {
-      if(!isMsgSizeOK(msg))
-        return;
+    if(checkMsgSize(msg) == false)
+      return;
+
     const IMailProcessor::TIdentity& senderId = MailFields->GetSenderIdentity();
-    MailProcessor.Send(senderId, msg, DraftMessage.valid() ? &(*DraftMessage) : nullptr);
+    MailProcessor.Send(senderId, msg, _msg_type, DraftMessage.valid() ? &(*DraftMessage) : nullptr);
     /// Clear potential modified flag to avoid asking for saving changes.
     ui->messageEdit->document()->setModified(false);
     close();
@@ -740,9 +765,53 @@ void MailEditorMainWindow::onAttachmentListChanged()
   ui->messageEdit->document()->setModified(true);
   }
 
-void MailEditorMainWindow::onAddAttachments(QStringList files)
+void MailEditorMainWindow::onFileAttachmentAdded(const QStringList& files)
 {
-  if (files.size())
+  if (files.isEmpty() == false)
+  {
     onFileAttachementTriggered( true );
-  FileAttachment->addFiles( files );
+    FileAttachment->addFiles( files );
+  }
+}
+
+void MailEditorMainWindow::addContactCard (const Contact& contact)
+{
+  FileAttachment->addContactCard(contact);
+  ui->fileAttachementToolBar->setVisible(true);
+}
+
+void MailEditorMainWindow::onMailReplyTriggered()
+{
+  MailEditorMainWindow* mailEditor = new MailEditorMainWindow(_parent, ABModel, MailProcessor, true);
+  mailEditor->LoadMessage(nullptr, *DraftMessage, _src_msg, Reply);
+  mailEditor->show();
+}
+
+void MailEditorMainWindow::onMailReplyAllTriggered()
+{
+  MailEditorMainWindow* mailEditor = new MailEditorMainWindow(_parent, ABModel, MailProcessor, true);
+  mailEditor->LoadMessage(nullptr, *DraftMessage, _src_msg, ReplyAll);
+  mailEditor->show();
+}
+
+void MailEditorMainWindow::onMailForwardTriggered()
+{
+  MailEditorMainWindow* mailEditor = new MailEditorMainWindow(_parent, ABModel, MailProcessor, true);
+  mailEditor->LoadMessage(nullptr, *DraftMessage, _src_msg, Forward);
+  mailEditor->show();
+}
+
+void MailEditorMainWindow::onBlockedImage()
+{
+  /// Show alert if any remote image is blocked
+  ui->remoteContentAlert->show();
+}
+
+void MailEditorMainWindow::onLoadBlockedImages()
+{
+  /// Hide alert about blocking images
+  ui->remoteContentAlert->hide();
+
+  /// Clear modified flag
+  ui->messageEdit->loadBlockedImages();
 }

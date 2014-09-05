@@ -13,10 +13,7 @@
   <property name="windowTitle">
    <string>Form</string>
   </property>
-  <layout class="QHBoxLayout" name="horizontalLayout_2">
-   <property name="spacing">
-    <number>0</number>
-   </property>
+  <layout class="QGridLayout" name="gridLayout">
    <property name="leftMargin">
     <number>0</number>
    </property>
@@ -29,23 +26,42 @@
    <property name="bottomMargin">
     <number>0</number>
    </property>
-   <item>
+   <property name="spacing">
+    <number>0</number>
+   </property>
+   <item row="0" column="0">
+    <widget class="HeaderWidget" name="header" native="true">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+       <horstretch>0</horstretch>
+       <verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="minimumSize">
+      <size>
+       <width>0</width>
+       <height>25</height>
+      </size>
+     </property>
+    </widget>
+   </item>
+   <item row="1" column="0">
     <widget class="QSplitter" name="splitter">
      <property name="orientation">
       <enum>Qt::Vertical</enum>
      </property>
      <property name="handleWidth">
-      <number>0</number>
+      <number>5</number>
      </property>
-     <property name="childrenCollapsible">
-      <bool>false</bool>
-     </property>
-     <widget class="QTableView" name="inbox_table">
+     <widget class="MailTable" name="inbox_table">
       <property name="sizePolicy">
        <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
         <horstretch>0</horstretch>
         <verstretch>0</verstretch>
        </sizepolicy>
+      </property>
+      <property name="contextMenuPolicy">
+       <enum>Qt::ActionsContextMenu</enum>
       </property>
       <property name="dragDropOverwriteMode">
        <bool>false</bool>
@@ -123,6 +139,84 @@
     </widget>
    </item>
   </layout>
+  <action name="actionOpen">
+   <property name="icon">
+    <iconset>
+     <normaloff>:/images/mail_open.png</normaloff>:/images/mail_open.png</iconset>
+   </property>
+   <property name="text">
+    <string>Open</string>
+   </property>
+   <property name="toolTip">
+    <string>Open the message in standalone window</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+O</string>
+   </property>
+  </action>
+  <action name="actionMark_as_unread">
+   <property name="icon">
+    <iconset>
+     <normaloff>:/images/mail.png</normaloff>:/images/mail.png</iconset>
+   </property>
+   <property name="text">
+    <string>Mark as unread</string>
+   </property>
+   <property name="toolTip">
+    <string>Mark selected messages as unread</string>
+   </property>
+  </action>
+  <action name="actionDelete">
+   <property name="icon">
+    <iconset>
+     <normaloff>:/images/delete_icon.png</normaloff>:/images/delete_icon.png</iconset>
+   </property>
+   <property name="text">
+    <string>Delete</string>
+   </property>
+   <property name="toolTip">
+    <string>Delete selected messages</string>
+   </property>
+  </action>
+  <action name="actionReply">
+   <property name="icon">
+    <iconset>
+     <normaloff>:/images/mail_reply.png</normaloff>:/images/mail_reply.png</iconset>
+   </property>
+   <property name="text">
+    <string>Reply</string>
+   </property>
+   <property name="toolTip">
+    <string>Reply to the sender of this message</string>
+   </property>
+  </action>
+  <action name="actionReply_All">
+   <property name="icon">
+    <iconset>
+     <normaloff>:/images/mail_reply_all.png</normaloff>:/images/mail_reply_all.png</iconset>
+   </property>
+   <property name="text">
+    <string>Reply All</string>
+   </property>
+   <property name="toolTip">
+    <string>Reply to sender and all recipients</string>
+   </property>
+  </action>
+  <action name="actionForward">
+   <property name="icon">
+    <iconset>
+     <normaloff>:/images/mail_forward.png</normaloff>:/images/mail_forward.png</iconset>
+   </property>
+   <property name="text">
+    <string>Forward</string>
+   </property>
+   <property name="toolTip">
+    <string>Forward this message</string>
+   </property>
+  </action>
+  <zorder>inbox_table</zorder>
+  <zorder>mail_viewer</zorder>
+  <zorder>header</zorder>
  </widget>
  <customwidgets>
   <customwidget>
@@ -131,7 +225,20 @@
    <header>Mail/MailViewer.hpp</header>
    <container>1</container>
   </customwidget>
+  <customwidget>
+   <class>MailTable</class>
+   <extends>QTableView</extends>
+   <header>Mail/MailTable.hpp</header>
+  </customwidget>
+  <customwidget>
+   <class>HeaderWidget</class>
+   <extends>QWidget</extends>
+   <header>qtreusable/HeaderWidget.hpp</header>
+   <container>1</container>
+  </customwidget>
  </customwidgets>
- <resources/>
+ <resources>
+  <include location="../Keyhotee.qrc"/>
+ </resources>
  <connections/>
 </ui>

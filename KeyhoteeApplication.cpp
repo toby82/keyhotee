@@ -1,10 +1,14 @@
+#include <sstream>
+
 #include "KeyhoteeApplication.hpp"
+#include "GitSHA1.h"
 
 #include "LoginDialog.hpp"
 #include "KeyhoteeMainWindow.hpp"
 
 #include "profile_wizard/ProfileWizard.hpp"
 
+#include <fc/crypto/openssl.hpp>
 #include <fc/exception/exception.hpp>
 #include <fc/log/logger.hpp>
 #include <fc/thread/thread.hpp>
@@ -24,12 +28,115 @@
 #include <QTemporaryFile>
 #include <QTranslator>
 
-#include <boost/filesystem/path.hpp>
-
 #include <assert.h>
+#include <iostream>
 
-#ifndef WIN32
+#ifdef WIN32
+  #include <Windows.h>
+  #include <wincon.h>
+
+  Q_GUI_EXPORT HICON qt_pixmapToWinHICON(const QPixmap &p);
+
+  BOOL WINAPI SetConsoleIcon(HICON hIcon)
+  {
+    typedef BOOL (WINAPI *PSetConsoleIcon)(HICON);
+    static PSetConsoleIcon pSetConsoleIcon = NULL;
+    if(pSetConsoleIcon == NULL)
+      pSetConsoleIcon = (PSetConsoleIcon)GetProcAddress(GetModuleHandle("kernel32"), "SetConsoleIcon");
+    if(pSetConsoleIcon == NULL)
+      return FALSE;
+    return pSetConsoleIcon(hIcon);
+  }
+
+  #define APP_TRY /*try*/
+  #define APP_CATCH /*Nothing*/
+
+# ifdef NDEBUG // enable crashrpt win32 release only
+#  include "CrashRpt/include/CrashRpt.h"
+
+  /* forwards SEH caught by fc's async tasks to CrashRpt */
+  int unhandled_exception_filter(unsigned code, _EXCEPTION_POINTERS* info)
+  {
+    return crExceptionFilter(code, info);
+  }
+
+  void installCrashRptHandler(const char* appName, const char* appVersion, const QFile& logFilePath)
+  {
+    // Define CrashRpt configuration parameters
+    CR_INSTALL_INFO info = {0};
+    info.cb = sizeof(CR_INSTALL_INFO);
+    info.pszAppName = appName;
+    info.pszAppVersion = appVersion;
+    info.pszEmailSubject = nullptr;
+    info.pszEmailTo = "sales@syncad.com";
+    info.pszUrl = "http://invictus.syncad.com/crash_report.html";
+    info.uPriorities[CR_HTTP] = 3;  // First try send report over HTTP 
+    info.uPriorities[CR_SMTP] = 2;  // Second try send report over SMTP  
+    info.uPriorities[CR_SMAPI] = 1; // Third try send report over Simple MAPI    
+    // Install all available exception handlers
+    info.dwFlags = CR_INST_ALL_POSSIBLE_HANDLERS | 
+                   CR_INST_CRT_EXCEPTION_HANDLERS |
+                   CR_INST_AUTO_THREAD_HANDLERS |
+                   CR_INST_SEND_QUEUED_REPORTS; 
+    // Define the Privacy Policy URL 
+    info.pszPrivacyPolicyURL = "http://invictus.syncad.com/crash_privacy.html"; 
+  
+    // Install crash reporting
+    int nResult = crInstall(&info);
+    if(nResult!=0)
+    {
+      // Something goes wrong. Get error message.
+      char szErrorMsg[512] = {0};
+      crGetLastErrorMsg(szErrorMsg, 512);
+      elog("Cannot install CrsshRpt error handler: ${e}", ("e", szErrorMsg));
+      return;
+    }
+    else
+    {
+      wlog("CrashRpt handler installed successfully");
+    }
+
+    auto logPathString = logFilePath.fileName().toStdString();
+
+    // Add our log file to the error report
+    crAddFile2(logPathString.c_str(), NULL, "Log File", CR_AF_MAKE_FILE_COPY);
+
+    // We want the screenshot of the entire desktop is to be added on crash
+    crAddScreenshot2(CR_AS_PROCESS_WINDOWS|CR_AS_USE_JPEG_FORMAT, 0);
+
+    fc::set_unhandled_structured_exception_filter(&unhandled_exception_filter);
+  }
+
+  void uninstallCrashRptHandler()
+  {
+    crUninstall();
+  }
+# endif // NDEBUG
+#else // WIN32
   #include <signal.h>
+
+  #define APP_TRY try
+  #define APP_CATCH \
+  catch(const fc::exception& e) \
+  {\
+    onExceptionCaught(e);\
+  }\
+  catch(...)\
+  {\
+    onUnknownExceptionCaught();\
+  }
+#endif
+
+#if !defined(WIN32) || !defined(NDEBUG)
+  void installCrashRptHandler(const char* appName, const char* appVersion, const QFile& logFilePath)
+  {
+  /// Nothing to do here since no crash report support available
+  }
+
+  void uninstallCrashRptHandler()
+  {
+  /// Nothing to do here since no crash report support available
+  }
 #endif
 
 #ifdef __STATIC_QT
@@ -57,6 +164,14 @@ Q_IMPORT_PLUGIN(QOffscreenIntegrationPlugin)
 static TKeyhoteeApplication* s_Instance = nullptr;
 
 #define APP_NAME "Keyhotee"
+
+static std::string CreateKeyhoteeVersionNumberString()
+{
+  std::ostringstream versionNumberStream;
+  versionNumberStream << g_KEYHOTEE_VERSION_MAJOR << "." << g_KEYHOTEE_VERSION_MINOR << "." << g_KEYHOTEE_VERSION_PATCH;
+  return versionNumberStream.str();
+}
+
 #define DEF_PROFILE_NAME "default"
 
 QTemporaryFile gLogFile;
@@ -90,13 +205,46 @@ TKeyhoteeApplication* TKeyhoteeApplication::getInstance() { return s_Instance; }
 int TKeyhoteeApplication::run(int& argc, char** argv)
 {
   ConfigureLoggingToTemporaryFile();
-  TKeyhoteeApplication app(argc, argv);
-  if (argc > 1)
-  {
-    app._loaded_profile_name = app.arguments().at(1);
-  }
 
-  return app.run();
+  installCrashRptHandler(APP_NAME, CreateKeyhoteeVersionNumberString().c_str(), gLogFile);
+
+  TKeyhoteeApplication app(argc, argv);
+
+#if defined(WIN32) && defined(_DEBUG)
+  bool console_ok = AllocConsole();
+  QPixmap px(":/images/keyhotee.png");
+  HICON hIcon = qt_pixmapToWinHICON(px);
+  SetConsoleIcon(hIcon);
+
+  freopen("CONOUT$", "wb", stdout);
+  freopen("CONOUT$", "wb", stderr);
+  //freopen( "console.txt", "wb", stdout);
+  //freopen( "console.txt", "wb", stderr);
+  printf("testing stdout\n");
+  fprintf(stderr, "testing stderr\n");
+#endif
+
+  auto strAppDir = applicationDirPath().toStdWString();
+  fc::path appDir(strAppDir);
+  fc::path openSSLConf = appDir / "openssl.cnf";
+  if(fc::exists(openSSLConf))
+    fc::store_configuration_path(openSSLConf);
+
+  fc::init_openssl();
+
+  if (argc > 1)
+    app._loaded_profile_name = app.arguments().at(1);
+
+  int ec = app.run();
+
+#if defined(WIN32) && defined(_DEBUG)
+  fclose(stdout);
+  FreeConsole();
+#endif
+
+  uninstallCrashRptHandler();
+
+  return ec;
 }
 
 void TKeyhoteeApplication::displayMainWindow()
@@ -104,6 +252,7 @@ void TKeyhoteeApplication::displayMainWindow()
   if(_main_window == nullptr)
   {
     _main_window = new KeyhoteeMainWindow(*this);
+    _main_window->setWindowFlags(Qt::WindowTitleHint | Qt::WindowMinMaxButtonsHint | Qt::WindowCloseButtonHint);
     _main_window->show();
     connect(this, &QApplication::focusChanged, _main_window, &KeyhoteeMainWindow::onFocusChanged);
     _backend_app->connect_to_network();
@@ -120,6 +269,11 @@ std::string TKeyhoteeApplication::getAppName() const
   return APP_NAME;
 }
 
+std::string TKeyhoteeApplication::getVersionNumberString() const
+{
+  return _keyhoteeVersionNumber;
+}
+
 TKeyhoteeApplication::TKeyhoteeApplication(int& argc, char** argv) 
 :QApplication(argc, argv),
  _loaded_profile_name(""),
@@ -129,6 +283,16 @@ TKeyhoteeApplication::TKeyhoteeApplication(int& argc, char** argv)
 {
   assert(s_Instance == nullptr && "Only one instance allowed at time");
   s_Instance = this;
+
+  _keyhoteeVersionNumber = CreateKeyhoteeVersionNumberString();
+
+  /// Configure the application object
+#ifdef Q_OS_MAC
+  QApplication::setAttribute(Qt::AA_DontShowIconsInMenus);
+  QApplication::setWindowIcon(QIcon(":/images/keyhotee.icns") );
+#else
+  QApplication::setWindowIcon(QIcon(":/images/keyhotee.png") );
+#endif
 
   _backend_app = bts::application::instance();
 
@@ -153,22 +317,33 @@ int TKeyhoteeApplication::run()
   signal(SIGSEGV, linuxSignalHandler);
 #endif ///WIN32
 
-  try
+  APP_TRY
   {
     setOrganizationDomain("invictus-innovations.com");
     setOrganizationName("Invictus Innovations, Inc");
     setApplicationName(APP_NAME);
 
-    QString locale = QLocale::system().name();
-    QTranslator translator;
-    translator.load(QString(":/keyhotee_")+locale);
-    installTranslator(&translator);
+    QSettings settings("Invictus Innovations", "Keyhotee");
+    QString locale = settings.value("Language", "").toString();
 
-    if(_loaded_profile_name.isEmpty())
+    /// If empty set default system locale
+    if(locale.isEmpty())
     {
-      QSettings settings("Invictus Innovations", "Keyhotee");
+      locale = QLocale::system().name();
+      settings.setValue("Language", locale);
+    }
+
+    QTranslator translator;
+    bool loadOk = translator.load(QString(":/keyhotee_") + locale);
+    if(loadOk)
+      installTranslator(&translator);
+    else
+      settings.setValue("Language", "en_US");
+    
+    if (_loaded_profile_name.isEmpty())
+    {
       _loaded_profile_name = settings.value("last_profile").toString();
-      if(!_loaded_profile_name.isEmpty())
+      if (!_loaded_profile_name.isEmpty())
         _last_loaded_profile_name = true;
     }
 
@@ -198,15 +373,7 @@ int TKeyhoteeApplication::run()
     else
       _exit_status = TExitStatus::SUCCESS;
   }
-  catch(const fc::exception& e)
-  {
-    onExceptionCaught(e);
-  }
-
-  catch(...)
-  {
-    onUnknownExceptionCaught();
-  }
+  APP_CATCH
 
   return _exit_status;
 }
@@ -214,6 +381,7 @@ int TKeyhoteeApplication::run()
 void TKeyhoteeApplication::displayLogin()
 {
   ilog( "." );
+  std::cerr << "displayLogin\n";
   LoginDialog* loginDialog = new LoginDialog(*this);
   loginDialog->connect(loginDialog, &QDialog::accepted,
     [ = ]()
@@ -237,7 +405,8 @@ void TKeyhoteeApplication::displayLogin()
 
 void TKeyhoteeApplication::displayProfileWizard()
 {
-  ilog( "." );
+  std::cerr << "displayProfileWizard\n";
+  ilog(".");
   auto profile_wizard = new ProfileWizard(*this);
   profile_wizard->resize(QSize(680, 600) );
   profile_wizard->show();
@@ -265,24 +434,18 @@ void TKeyhoteeApplication::displayFailureInfo(const std::string& detail)
 
 bool TKeyhoteeApplication::notify(QObject* receiver, QEvent* e)
 {
-  try
+  APP_TRY
   {
     return QApplication::notify(receiver, e);
   }
-  catch (const fc::exception& e)
-  {
-    onExceptionCaught(e);
-  }
-  catch(...)
-  {
-    onUnknownExceptionCaught();
-  }
+  APP_CATCH
 
   return true;
 }
 
 void TKeyhoteeApplication::startup()
 {
+  std::cerr << "startup()\n";
   ilog( "." );
 
   if(_backend_app->has_profile() )

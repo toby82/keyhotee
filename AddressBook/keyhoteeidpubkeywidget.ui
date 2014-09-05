@@ -6,18 +6,56 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>681</width>
-    <height>71</height>
+    <width>684</width>
+    <height>80</height>
    </rect>
+  </property>
+  <property name="focusPolicy">
+   <enum>Qt::NoFocus</enum>
   </property>
   <property name="windowTitle">
    <string>KeyhoteeIDPubKeyWidget</string>
   </property>
   <layout class="QGridLayout" name="gridLayout">
-   <item row="0" column="0">
-    <widget class="QLabel" name="label_keyhotee_id">
+   <item row="3" column="2">
+    <widget class="QToolButton" name="public_key_to_clipboard">
+     <property name="maximumSize">
+      <size>
+       <width>20</width>
+       <height>20</height>
+      </size>
+     </property>
+     <property name="toolTip">
+      <string>Copy Public Key to the clipboard</string>
+     </property>
      <property name="text">
-      <string>Keyhotee ID</string>
+      <string>...</string>
+     </property>
+     <property name="icon">
+      <iconset resource="../Keyhotee.qrc">
+       <normaloff>:/images/win/editcopy.png</normaloff>:/images/win/editcopy.png</iconset>
+     </property>
+     <property name="iconSize">
+      <size>
+       <width>20</width>
+       <height>20</height>
+      </size>
+     </property>
+    </widget>
+   </item>
+   <item row="3" column="1">
+    <widget class="QLineEdit" name="public_key">
+     <property name="font">
+      <font>
+       <pointsize>10</pointsize>
+      </font>
+     </property>
+    </widget>
+   </item>
+   <item row="3" column="0">
+    <widget class="QLabel" name="label_public_key">
+     <property name="text">
+      <string>Public Key</string>
      </property>
     </widget>
    </item>
@@ -25,8 +63,15 @@
     <widget class="QLineEdit" name="keyhotee_id">
      <property name="font">
       <font>
-       <pointsize>13</pointsize>
+       <pointsize>10</pointsize>
       </font>
+     </property>
+    </widget>
+   </item>
+   <item row="0" column="0">
+    <widget class="QLabel" name="label_keyhotee_id">
+     <property name="text">
+      <string>Keyhotee ID</string>
      </property>
     </widget>
    </item>
@@ -49,24 +94,8 @@
      </property>
     </widget>
    </item>
-   <item row="1" column="0">
-    <widget class="QLabel" name="label_public_key">
-     <property name="text">
-      <string>Public Key</string>
-     </property>
-    </widget>
-   </item>
-   <item row="1" column="1">
-    <widget class="QLineEdit" name="public_key">
-     <property name="font">
-      <font>
-       <pointsize>13</pointsize>
-      </font>
-     </property>
-    </widget>
-   </item>
-   <item row="1" column="2">
-    <widget class="QToolButton" name="public_key_to_clipboard">
+   <item row="3" column="3">
+    <widget class="QToolButton" name="private_key_to_clipboard">
      <property name="maximumSize">
       <size>
        <width>20</width>
@@ -74,20 +103,14 @@
       </size>
      </property>
      <property name="toolTip">
-      <string>Copy to clipboard</string>
+      <string>Copy Private Key to the clipboard</string>
      </property>
      <property name="text">
-      <string>...</string>
+      <string>Copy Private Key</string>
      </property>
      <property name="icon">
       <iconset resource="../Keyhotee.qrc">
-       <normaloff>:/images/win/editcopy.png</normaloff>:/images/win/editcopy.png</iconset>
-     </property>
-     <property name="iconSize">
-      <size>
-       <width>20</width>
-       <height>20</height>
-      </size>
+       <normaloff>:/images/private_key.png</normaloff>:/images/private_key.png</iconset>
      </property>
     </widget>
    </item>

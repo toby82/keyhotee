@@ -18,14 +18,46 @@
   </property>
   <widget class="QWidget" name="centralwidget">
    <layout class="QGridLayout" name="gridLayout">
-    <property name="margin">
+    <property name="leftMargin">
+     <number>0</number>
+    </property>
+    <property name="topMargin">
+     <number>0</number>
+    </property>
+    <property name="rightMargin">
+     <number>0</number>
+    </property>
+    <property name="bottomMargin">
      <number>0</number>
     </property>
     <property name="spacing">
      <number>0</number>
     </property>
+    <item row="1" column="0">
+     <widget class="TMessageEdit" name="messageEdit">
+      <property name="undoRedoEnabled">
+       <bool>true</bool>
+      </property>
+      <property name="textInteractionFlags">
+       <set>Qt::LinksAccessibleByKeyboard|Qt::LinksAccessibleByMouse|Qt::TextBrowserInteraction|Qt::TextEditable|Qt::TextEditorInteraction|Qt::TextSelectableByKeyboard|Qt::TextSelectableByMouse</set>
+      </property>
+     </widget>
+    </item>
     <item row="0" column="0">
-     <widget class="TMessageEdit" name="messageEdit"/>
+     <widget class="BlockedContentAlert" name="remoteContentAlert" native="true">
+      <property name="sizePolicy">
+       <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+        <horstretch>0</horstretch>
+        <verstretch>0</verstretch>
+       </sizepolicy>
+      </property>
+      <property name="minimumSize">
+       <size>
+        <width>0</width>
+        <height>30</height>
+       </size>
+      </property>
+     </widget>
     </item>
    </layout>
   </widget>
@@ -173,6 +205,20 @@
    <addaction name="actionCopy"/>
    <addaction name="actionCut"/>
    <addaction name="actionPaste"/>
+  </widget>
+  <widget class="QToolBar" name="mailToolBar">
+   <property name="windowTitle">
+    <string>Mail Reply/Forward</string>
+   </property>
+   <attribute name="toolBarArea">
+    <enum>TopToolBarArea</enum>
+   </attribute>
+   <attribute name="toolBarBreak">
+    <bool>false</bool>
+   </attribute>
+   <addaction name="actionReply"/>
+   <addaction name="actionReplyAll"/>
+   <addaction name="actionForward"/>
   </widget>
   <action name="actionSave">
    <property name="enabled">
@@ -522,12 +568,54 @@
     <string>Allows to display all text formatting options...</string>
    </property>
   </action>
+  <action name="actionReply">
+   <property name="icon">
+    <iconset resource="../Keyhotee.qrc">
+     <normaloff>:/images/mail_reply.png</normaloff>:/images/mail_reply.png</iconset>
+   </property>
+   <property name="text">
+    <string>Reply</string>
+   </property>
+   <property name="toolTip">
+    <string>Reply to the sender of this message</string>
+   </property>
+  </action>
+  <action name="actionForward">
+   <property name="icon">
+    <iconset resource="../Keyhotee.qrc">
+     <normaloff>:/images/mail_forward.png</normaloff>:/images/mail_forward.png</iconset>
+   </property>
+   <property name="text">
+    <string>Forward</string>
+   </property>
+   <property name="toolTip">
+    <string>Forward this message</string>
+   </property>
+  </action>
+  <action name="actionReplyAll">
+   <property name="icon">
+    <iconset resource="../Keyhotee.qrc">
+     <normaloff>:/images/mail_reply_all.png</normaloff>:/images/mail_reply_all.png</iconset>
+   </property>
+   <property name="text">
+    <string>ReplyAll</string>
+   </property>
+   <property name="toolTip">
+    <string>Reply to sender and all recipients</string>
+   </property>
+  </action>
  </widget>
  <customwidgets>
   <customwidget>
    <class>TMessageEdit</class>
-   <extends>QTextEdit</extends>
+   <extends>QTextBrowser</extends>
    <header>Mail/TMessageEdit.hpp</header>
+  </customwidget>
+  <customwidget>
+   <class>BlockedContentAlert</class>
+   <extends>QWidget</extends>
+   <header>Mail/BlockedContentAlert.hpp</header>
+   <container>1</container>
   </customwidget>
  </customwidgets>
  <resources>
@@ -781,8 +869,8 @@
    <slot>onTextAlignTriggerred(QAction*)</slot>
    <hints>
     <hint type="sourcelabel">
-     <x>234</x>
-     <y>108</y>
+     <x>209</x>
+     <y>105</y>
     </hint>
     <hint type="destinationlabel">
      <x>-5</x>
@@ -909,8 +997,8 @@
    <slot>setChecked(bool)</slot>
    <hints>
     <hint type="sourcelabel">
-     <x>226</x>
-     <y>109</y>
+     <x>379</x>
+     <y>105</y>
     </hint>
     <hint type="destinationlabel">
      <x>-1</x>
@@ -926,7 +1014,7 @@
    <hints>
     <hint type="sourcelabel">
      <x>5</x>
-     <y>462</y>
+     <y>512</y>
     </hint>
     <hint type="destinationlabel">
      <x>-1</x>
@@ -941,8 +1029,8 @@
    <slot>setChecked(bool)</slot>
    <hints>
     <hint type="sourcelabel">
-     <x>325</x>
-     <y>462</y>
+     <x>337</x>
+     <y>512</y>
     </hint>
     <hint type="destinationlabel">
      <x>-1</x>
@@ -957,12 +1045,60 @@
    <slot>setChecked(bool)</slot>
    <hints>
     <hint type="sourcelabel">
-     <x>382</x>
-     <y>109</y>
+     <x>209</x>
+     <y>105</y>
     </hint>
     <hint type="destinationlabel">
      <x>-1</x>
      <y>-1</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>actionReply</sender>
+   <signal>triggered()</signal>
+   <receiver>MailEditorWindow</receiver>
+   <slot>onMailReplyTriggered()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>-1</x>
+     <y>-1</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>477</x>
+     <y>256</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>actionReplyAll</sender>
+   <signal>triggered()</signal>
+   <receiver>MailEditorWindow</receiver>
+   <slot>onMailReplyAllTriggered()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>-1</x>
+     <y>-1</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>477</x>
+     <y>256</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>actionForward</sender>
+   <signal>triggered()</signal>
+   <receiver>MailEditorWindow</receiver>
+   <slot>onMailForwardTriggered()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>-1</x>
+     <y>-1</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>477</x>
+     <y>256</y>
     </hint>
    </hints>
   </connection>

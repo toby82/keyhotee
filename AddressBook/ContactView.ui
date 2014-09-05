@@ -23,6 +23,9 @@
     <height>250</height>
    </size>
   </property>
+  <property name="focusPolicy">
+   <enum>Qt::TabFocus</enum>
+  </property>
   <property name="windowTitle">
    <string>Form</string>
   </property>
@@ -398,6 +401,9 @@
                  <height>72</height>
                 </size>
                </property>
+               <property name="focusPolicy">
+                <enum>Qt::NoFocus</enum>
+               </property>
               </widget>
              </item>
              <item>
@@ -635,7 +641,6 @@
           <zorder>first_name_label</zorder>
           <zorder>last_name_label</zorder>
           <zorder>icon_view</zorder>
-          <zorder></zorder>
          </widget>
         </widget>
        </item>
@@ -665,23 +670,6 @@
        <property name="spacing">
         <number>0</number>
        </property>
-       <item row="1" column="0">
-        <widget class="QPushButton" name="sendButton">
-         <property name="sizePolicy">
-          <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-           <horstretch>0</horstretch>
-           <verstretch>0</verstretch>
-          </sizepolicy>
-         </property>
-         <property name="toolTip">
-          <string>Allows to send message
-Enter</string>
-         </property>
-         <property name="text">
-          <string>Send</string>
-         </property>
-        </widget>
-       </item>
        <item row="0" column="0">
         <widget class="QWidget" name="widget" native="true">
          <property name="sizePolicy">
@@ -725,6 +713,52 @@ Enter</string>
             <widget class="QPlainTextEdit" name="chat_input"/>
            </widget>
           </item>
+          <item row="1" column="0">
+           <widget class="QWidget" name="widget_3" native="true">
+            <property name="minimumSize">
+             <size>
+              <width>0</width>
+              <height>30</height>
+             </size>
+            </property>
+            <widget class="QPushButton" name="sendButton">
+             <property name="enabled">
+              <bool>true</bool>
+             </property>
+             <property name="geometry">
+              <rect>
+               <x>8</x>
+               <y>6</y>
+               <width>75</width>
+               <height>23</height>
+              </rect>
+             </property>
+             <property name="sizePolicy">
+              <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+               <horstretch>0</horstretch>
+               <verstretch>0</verstretch>
+              </sizepolicy>
+             </property>
+             <property name="toolTip">
+              <string>Allows to send message
+Enter</string>
+             </property>
+             <property name="text">
+              <string>Send</string>
+             </property>
+            </widget>
+            <widget class="IdentitySelection" name="widget_Identity" native="true">
+             <property name="geometry">
+              <rect>
+               <x>106</x>
+               <y>6</y>
+               <width>493</width>
+               <height>23</height>
+              </rect>
+             </property>
+            </widget>
+           </widget>
+          </item>
          </layout>
         </widget>
        </item>
@@ -742,16 +776,27 @@ Enter</string>
    <header>AddressBook/keyhoteeidpubkeywidget.hpp</header>
    <container>1</container>
   </customwidget>
+  <customwidget>
+   <class>IdentitySelection</class>
+   <extends>QWidget</extends>
+   <header>Identity/IdentitySelection.hpp</header>
+   <container>1</container>
+  </customwidget>
  </customwidgets>
  <tabstops>
   <tabstop>contact_pages</tabstop>
   <tabstop>icon_view</tabstop>
   <tabstop>firstname</tabstop>
   <tabstop>lastname</tabstop>
+  <tabstop>mining_effort_slider</tabstop>
+  <tabstop>khid_pubkey</tabstop>
   <tabstop>privacy_comboBox</tabstop>
   <tabstop>email</tabstop>
   <tabstop>phone</tabstop>
   <tabstop>notes</tabstop>
+  <tabstop>chat_conversation</tabstop>
+  <tabstop>chat_input</tabstop>
+  <tabstop>sendButton</tabstop>
  </tabstops>
  <resources>
   <include location="../Keyhotee.qrc"/>

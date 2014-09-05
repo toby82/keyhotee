@@ -1,22 +1,27 @@
 #include "ContactsTable.hpp"
 #include "ui_ContactsTable.h"
 #include "AddressBookModel.hpp"
-#include <bts/application.hpp>
-#include <bts/profile.hpp>
-#include "AddressBook/ContactView.hpp"
 #include "KeyhoteeMainWindow.hpp"
 
+#include "AddressBook/ContactView.hpp"
+
+#include <bts/application.hpp>
+#include <bts/profile.hpp>
+
+#include "Identity/IdentityObservable.hpp"
+
+#include <QClipboard>
 #include <QSortFilterProxyModel>
 #include <QHeaderView>
 #include <QMessageBox>
 
-class ContactsSortFilterProxyModel : public QSortFilterProxyModel
+class ContactsSortFilterProxyModel : public FilterBlockedModel
 {
 public:
-  ContactsSortFilterProxyModel(QObject *parent = 0) : QSortFilterProxyModel(parent)
-    {
+  ContactsSortFilterProxyModel(QObject *parent = 0) : FilterBlockedModel(parent)
+  {
     setSortRole(Qt::UserRole);
-    }
+  }
 
 protected:
   bool filterAcceptsRow(int sourceRow, const QModelIndex &sourceParent) const;
@@ -27,16 +32,10 @@ bool ContactsSortFilterProxyModel::filterAcceptsRow(int sourceRow, const QModelI
   QModelIndex first_name_index = sourceModel()->index(sourceRow, AddressBookModel::FirstName, sourceParent);
   QModelIndex last_name_index = sourceModel()->index(sourceRow, AddressBookModel::LastName, sourceParent);
   QModelIndex id_index = sourceModel()->index(sourceRow, AddressBookModel::Id, sourceParent);
-  return sourceModel()->data(first_name_index).toString().contains(filterRegExp()) ||
+  return (sourceModel()->data(first_name_index).toString().contains(filterRegExp()) ||
          sourceModel()->data(last_name_index).toString().contains(filterRegExp()) ||
-         sourceModel()->data(id_index).toString().contains(filterRegExp());
-  }
-
-void ContactsTable::searchEditChanged(QString search_string)
-  {
-  QSortFilterProxyModel* model = dynamic_cast<QSortFilterProxyModel*>(ui->contact_table->model());
-  QRegExp                regex(search_string, Qt::CaseInsensitive, QRegExp::FixedString);
-  model->setFilterRegExp(regex);
+         sourceModel()->data(id_index).toString().contains(filterRegExp())) &&
+         FilterBlockedModel::filterAcceptsRow(sourceRow, sourceParent);
   }
 
 ContactsTable::ContactsTable(QWidget* parent)
@@ -45,6 +44,7 @@ ContactsTable::ContactsTable(QWidget* parent)
   _currentWidgetView (nullptr)
   {
   ui->setupUi(this);
+  ui->header->initial(tr("Contact list"));
   ui->contact_table->setModificationsChecker (this);
   //_delete_contact = new QAction(this); //QIcon( ":/images/delete_icon.png"), tr( "Delete" ), this);
   //_delete_contact->setShortcut(Qt::Key_Delete);
@@ -53,10 +53,28 @@ ContactsTable::ContactsTable(QWidget* parent)
   //connect( _delete_contact, &QAction::triggered, this, &ContactsTable::onDeleteContact);
   }
 
-ContactsTable::~ContactsTable(){}
+ContactsTable::~ContactsTable()
+{
+  delete ui;
+}
+
+void ContactsTable::searchEditChanged(QString search_string)
+{
+  QSortFilterProxyModel* model = dynamic_cast<QSortFilterProxyModel*>(ui->contact_table->model());
+  QRegExp                regex(search_string, Qt::CaseInsensitive, QRegExp::FixedString);
+  model->setFilterRegExp(regex);
+}
+
+void ContactsTable::setShowBlocked(bool showBlocked)
+{
+  ContactsSortFilterProxyModel* model = dynamic_cast<ContactsSortFilterProxyModel*>(ui->contact_table->model());
+  model->setFilterBlocked(!showBlocked);
+
+  updateHeader();
+}
 
 void ContactsTable::setAddressBook(AddressBookModel* addressbook_model)
-  {
+{
   _addressbook_model = addressbook_model;
   if (_addressbook_model)
     {
@@ -65,13 +83,24 @@ void ContactsTable::setAddressBook(AddressBookModel* addressbook_model)
     _sorted_addressbook_model->setDynamicSortFilter(true);
     ui->contact_table->setModel(_sorted_addressbook_model);
     }
+
   ui->contact_table->setShowGrid(false);
   ui->contact_table->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
   ui->contact_table->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+  ui->contact_table->horizontalHeader()->setSectionResizeMode(AddressBookModel::UserIcon, QHeaderView::Fixed);
+  ui->contact_table->resizeColumnToContents(AddressBookModel::UserIcon);
+  /** Sometimes "contact status" column becomes too small and is the icons are not visible clearly (on Debian).
+      So the "contact status" column should be resized.
+  */
+  //ui->contact_table->horizontalHeader()->setSectionResizeMode(AddressBookModel::ContactStatus, QHeaderView::Fixed);
+  ui->contact_table->resizeColumnToContents(AddressBookModel::ContactStatus);
+
 
   QItemSelectionModel* selection_model = ui->contact_table->selectionModel();
   connect(selection_model, &QItemSelectionModel::selectionChanged, this, &ContactsTable::onSelectionChanged);
-  }
+
+  updateOptions();
+}
 
 void ContactsTable::onSelectionChanged (const QItemSelection &selected, const QItemSelection &deselected)
   {
@@ -91,9 +120,9 @@ void ContactsTable::onSelectionChanged (const QItemSelection &selected, const QI
     ui->contact_details_view->setCurrentWidget(ui->page_message);
     }
 
-  getKeyhoteeWindow()->refreshDeleteContactOption();
-  getKeyhoteeWindow()->refreshEditMenu();
+  getKeyhoteeWindow()->refreshMenuOptions();
   }
+
 
 void ContactsTable::onDeleteContact()
   {
@@ -107,22 +136,32 @@ void ContactsTable::onDeleteContact()
   if (QMessageBox::question(this, tr("Delete Contact"), tr("Are you sure you want to delete selected contact(s)?")) == QMessageBox::Button::No)
     return;
   QModelIndexList        indexes;
-  foreach(QModelIndex sortFilterIndex, sortFilterIndexes)
+  for(const QModelIndex& sortFilterIndex : sortFilterIndexes)
     indexes.append(model->mapToSource(sortFilterIndex));
   qSort(indexes);
   auto sourceModel = model->sourceModel();
-  auto app = bts::application::instance();
-  auto profile = app->get_profile();
+  auto profile = bts::get_profile();
 
-  for (int i = indexes.count() - 1; i > -1; --i)
+  for(int i = indexes.count() - 1; i > -1; --i)
   {
-    auto contact_id = ((AddressBookModel*)sourceModel)->getContact(indexes.at(i)).wallet_index;
-    if(profile->isIdentityPresent(((AddressBookModel*)sourceModel)->getContact(indexes.at(i)).dac_id_string))
+    auto contact = ((AddressBookModel*)sourceModel)->getContact(indexes.at(i));
+    auto contact_id = contact.wallet_index;
+
+    bool is_to_delete = true;
+    if(profile->isIdentityPresent(contact.dac_id_string))
     {
-      profile->removeIdentity(((AddressBookModel*)sourceModel)->getContact(indexes.at(i)).dac_id_string);
+      auto identity = profile->get_identity(contact.dac_id_string);
+      if(contact.public_key == identity.public_key)
+      {
+        is_to_delete = deleteIdentity(identity);
+      }
     }
-    sourceModel->removeRows(indexes.at(i).row(), 1);
-    Q_EMIT contactDeleted(contact_id); //emit signal so that ContactGui is also deleted
+
+    if(is_to_delete)
+    {
+      sourceModel->removeRows(indexes.at(i).row(), 1);
+      Q_EMIT contactDeleted(contact_id); //emit signal so that ContactGui is also deleted
+    }
   }
   //model->setUpdatesEnabled(true);
   //TODO Remove fullname/bitname for deleted contacts from QCompleter
@@ -130,6 +169,31 @@ void ContactsTable::onDeleteContact()
   qSort(sortFilterIndexes);
   selectNextRow(sortFilterIndexes.takeLast().row(), indexes.count());
   }
+
+bool ContactsTable::deleteIdentity(bts::addressbook::wallet_identity& identity)
+{
+  auto app = bts::application::instance();
+  auto profile = app->get_profile();
+
+  bool is_continue = IdentityObservable::getInstance().notifyDelIntent(identity);
+
+  if(!is_continue)
+    return false;
+
+  is_continue = IdentityObservable::getInstance().notifyDelete(identity);
+
+  if(!is_continue)
+    return false;
+
+  auto priv_key = profile->get_keychain().get_identity_key(identity.dac_id_string);
+  app->remove_receive_key(priv_key);
+  profile->removeIdentity(identity.dac_id_string);
+
+  /// notify identity observers
+  IdentityObservable::getInstance().notify();
+
+  return true;
+}
 
 bool ContactsTable::isShowDetailsHidden()
   {
@@ -227,10 +291,8 @@ void ContactsTable::showContactsTable (bool visible) const
   {
   //disable table, because hide() function emits signal onSelectionChanged
   ui->contact_table->setEnabled (visible);
-  if (visible)
-    ui->contact_table->show ();
-  else
-    ui->contact_table->hide ();
+  ui->contact_table->setVisible(visible);
+  ui->header->setVisible(visible);
   }
 
 bool ContactsTable::canContinue() const
@@ -283,7 +345,7 @@ bool ContactsTable::EscapeIfEditMode() const
 
 QWidget* ContactsTable::getContactsTableWidget () const
 {
-  return static_cast<QWidget*>(ui->contact_table);
+  return ui->contact_table;
 }
 
 void ContactsTable::copy()
@@ -305,4 +367,53 @@ void ContactsTable::copy()
     QClipboard *clip = QApplication::clipboard();
     clip->setText (strContact);
   }
+}
+
+
+void ContactsTable::getSelectedContacts (QList<const Contact*>& contacts)
+{
+  QItemSelectionModel* selection_model = ui->contact_table->selectionModel();
+  QModelIndexList      indexes = selection_model->selectedRows();
+
+  for (auto idx : indexes)
+  {
+    QModelIndex mapped_index = _sorted_addressbook_model->mapToSource(idx);
+    contacts.push_back( &_addressbook_model->getContact(mapped_index) );
+  }
+}
+
+void ContactsTable::updateOptions()
+{
+  auto profile = bts::get_profile();
+  QString profile_name = QString::fromStdWString(profile->get_name());
+  QString settings_file = "keyhotee_";
+  settings_file.append(profile_name);
+  QSettings settings("Invictus Innovations", settings_file);
+
+  ContactsSortFilterProxyModel* model = dynamic_cast<ContactsSortFilterProxyModel*>(ui->contact_table->model());
+  model->setEnableFilter(settings.value("FilterBlocked", "").toBool());
+
+  updateHeader();
+}
+
+
+void ContactsTable::updateHeader()
+{
+  ContactsSortFilterProxyModel* model = dynamic_cast<ContactsSortFilterProxyModel*>(ui->contact_table->model());
+
+  /// Notifies about changed header title 
+  QString headerTitle;
+  if (model->isFilterBlockedEnable() == true &&
+    /** Check also the availability of the blocked filter
+        Because "Enable filter blocked contacts" options can be disabled
+    */
+    model->isFilterAvailable() == true)
+  {
+    headerTitle = tr("Blocked contacts list");
+  }
+  else
+  {
+    headerTitle = tr("Contact list");
+  }
+  ui->header->onHeaderChanged(headerTitle);
 }

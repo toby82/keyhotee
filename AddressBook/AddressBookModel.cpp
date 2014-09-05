@@ -1,51 +1,35 @@
 #include "AddressBookModel.hpp"
+
+#include "Contact.hpp"
+
 #include <QIcon>
-#include <QPixmap>
-#include <QImage>
-#include <qcompleter.h>
 
 #include <fc/reflect/variant.hpp>
 #include <fc/exception/exception.hpp>
 #include <fc/log/logger.hpp>
 #include <fc/io/raw.hpp>
-#include "Contact.hpp"
 
-
+bool FilterBlockedModel::_is_filter_on = false;
 
 namespace Detail
 {
+
 class AddressBookModelImpl
 {
   public:
     QIcon                             _default_icon;
     QIcon                             _ownership_yes;
-    QIcon                             _ownership_no;
+    QIcon                             _authorized;
+    QIcon                             _blocked;
+    QIcon                             _autho_sent;
+    QIcon                             _blocked_me;
+    QIcon                             _unauthorized;
     std::vector<Contact>              _contacts;
     bts::addressbook::addressbook_ptr _address_book;
-    ContactCompletionModel            _contact_completion_model;
-    QCompleter*                       _contact_completer;
 //    std::vector<int>                  _completion_row_to_wallet_index;
 };
-}
 
-ContactCompletionModel::ContactCompletionModel(QObject* parent) 
-  : QStringListModel(parent)
-{
-}
-ContactCompletionModel::~ContactCompletionModel()
-{
-}
-QVariant ContactCompletionModel::data( const QModelIndex& index, int role )const
-{
-  if( !index.isValid() )
-    return QVariant();
-  if (role == Qt::DisplayRole || role == Qt::EditRole)
-   return QStringListModel::data(index, role);
-  else if( role == Qt::UserRole )
-    return index.row();
-  return QVariant();
-}
-
+} /// namespace Detail
 
 AddressBookModel::AddressBookModel(QObject* parent, bts::addressbook::addressbook_ptr address_book)
   : QAbstractTableModel(parent), my(new Detail::AddressBookModelImpl() )
@@ -54,16 +38,14 @@ AddressBookModel::AddressBookModel(QObject* parent, bts::addressbook::addressboo
   my->_default_icon.addFile(QStringLiteral(":/images/user.png"), QSize(), QIcon::Normal, QIcon::Off);
 
   my->_ownership_yes.addFile(QStringLiteral(":/images/ownership.png"), QSize(), QIcon::Normal, QIcon::Off);
-  my->_ownership_no.addFile(QStringLiteral(":/images/blank.png"), QSize(), QIcon::Normal, QIcon::Off);
+  
+  my->_blocked.addFile(QStringLiteral(":/images/request_block.png"), QSize(), QIcon::Normal, QIcon::Off);
+  my->_authorized.addFile(QStringLiteral(":/images/request_accept.png"), QSize(), QIcon::Normal, QIcon::Off);
+  my->_autho_sent.addFile(QStringLiteral(":/images/request_sent.png"), QSize(), QIcon::Normal, QIcon::Off);
+  my->_blocked_me.addFile(QStringLiteral(":/images/request_blocked_me.png"), QSize(), QIcon::Normal, QIcon::Off);
+  my->_unauthorized.addFile(QStringLiteral(":/images/request_unauthorized.png"), QSize(), QIcon::Normal, QIcon::Off);
 
   reloadContacts();
-
-  //create completer from completion model
-  my->_contact_completer = new QCompleter(this);
-  my->_contact_completer->setModel(&(my->_contact_completion_model) );
-  //_contact_completer->setModelSorting( QCompleter::CaseInsensitivelySortedModel );
-  my->_contact_completer->setCaseSensitivity(Qt::CaseInsensitive);
-  my->_contact_completer->setWrapAround(true);
 }
 
 AddressBookModel::~AddressBookModel()
@@ -71,7 +53,7 @@ AddressBookModel::~AddressBookModel()
 
 int AddressBookModel::rowCount(const QModelIndex& parent) const
 {
-  return my->_contacts.size();
+  return static_cast<int>(my->_contacts.size());
 }
 
 int AddressBookModel::columnCount(const QModelIndex& parent) const
@@ -85,16 +67,9 @@ bool AddressBookModel::removeRows(int row, int count, const QModelIndex&)
   // remove contacts from addressbook database
   for (int i = row; i < row + count; ++i)
     my->_address_book->remove_contact(my->_contacts[i]);
-  for (int i = row; i < row + count; ++i)
-  {
-    // remove from addressbook database
-    my->_address_book->remove_contact(my->_contacts[i]);
-  }
   //remove from in-memory contact list
   auto rowI = my->_contacts.begin() + row;
   my->_contacts.erase(rowI, rowI + count);
-  //remove fullname and dac_id from Qcompleter
-  my->_contact_completion_model.removeRows(row * 2, count * 2);
   endRemoveRows();
   return true;
 }
@@ -119,8 +94,6 @@ QVariant AddressBookModel::headerData(int section, Qt::Orientation orientation, 
         {
           case FirstName:
             return tr("First Name");
-          case Ownership:
-            return tr(" ");  // Ownership
           case LastName:
             return tr("Last Name");
           case Id:
@@ -129,8 +102,8 @@ QVariant AddressBookModel::headerData(int section, Qt::Orientation orientation, 
             return tr("Age");
           case Repute:
             return tr("Repute");
-          case UserIcon:
-            break;
+          default:
+            return QVariant();
         }
       }
     case Qt::TextAlignmentRole:
@@ -153,13 +126,21 @@ QVariant AddressBookModel::headerData(int section, Qt::Orientation orientation, 
         return QSize(32, 16);
       default:
         return QVariant();
-      }
+      } // switch column in SizeHintRole
+    case Qt::ToolTipRole:
+      switch((Columns)section)
+      {
+      case ContactStatus:
+        return tr("Contact status");
+      default:
+        return QVariant();
+      } //switch column in ToolTipRole
     }
   }
   else
   {
-	}
-	
+  }
+
   return QVariant();
 }
 
@@ -174,9 +155,8 @@ QVariant AddressBookModel::data(const QModelIndex& index, int role) const
       switch ( (Columns)index.column() )
       {
         case UserIcon:
+        case ContactStatus:
           return QSize(48, 48);
-        case Ownership:
-          return QSize(32, 32);
         default:
           return QVariant();
       } //switch column in SizeHintRole
@@ -185,8 +165,24 @@ QVariant AddressBookModel::data(const QModelIndex& index, int role) const
       {
         case UserIcon:
           return current_contact.getIcon();
-        case Ownership:
-          return current_contact.isOwn() ? my->_ownership_yes : my->_ownership_no;
+        case ContactStatus:
+          if(current_contact.isOwn())
+            return my->_ownership_yes;
+          else if(current_contact.auth_status == bts::addressbook::i_block)
+            return my->_blocked;
+          else if(current_contact.auth_status == bts::addressbook::accepted ||
+                  current_contact.auth_status == bts::addressbook::accepted_chat ||
+                  current_contact.auth_status == bts::addressbook::accepted_mail)
+            return my->_authorized;
+          else if(current_contact.auth_status == bts::addressbook::sent_request)
+            return my->_autho_sent;
+          else if(current_contact.auth_status == bts::addressbook::blocked_me)
+            return my->_blocked_me;
+          else if(current_contact.auth_status == bts::addressbook::unauthorized ||
+                  current_contact.auth_status == bts::addressbook::denied)
+            return my->_unauthorized;
+          else
+            return QVariant();
         default:
           return QVariant();
       } //switch column in DecorationRole
@@ -198,26 +194,35 @@ QVariant AddressBookModel::data(const QModelIndex& index, int role) const
         case LastName:
           return current_contact.last_name.c_str();
         case Id:
-          return current_contact.dac_id_string.c_str();
+          if(current_contact.dac_id_string.empty() &&
+            current_contact.first_name.empty() && current_contact.last_name.empty())
+            return current_contact.get_trim_pk().c_str();
+          else
+            return current_contact.dac_id_string.c_str();
         case Age:
           return current_contact.getAge();
         case Repute:
           return current_contact.getRepute();
-        case Ownership:
-        case UserIcon:
+        case ContactStatus:
+          return QVariant();
+        default:
           return QVariant();
       } //switch column in DisplayRole
     case Qt::UserRole:
       switch ( (Columns)index.column() )
       {
-        case Ownership:
-          return current_contact.isOwn() ? true : false;
+        case ContactStatus:
+          return current_contact.isBlocked();
         case FirstName:
           return current_contact.first_name.c_str();
         case LastName:
           return current_contact.last_name.c_str();
         case Id:
-          return current_contact.dac_id_string.c_str();
+          if(current_contact.dac_id_string.empty() &&
+            current_contact.first_name.empty() && current_contact.last_name.empty())
+            return current_contact.get_trim_pk().c_str();
+          else
+            return current_contact.dac_id_string.c_str();
         case Age:
           return current_contact.getAge();
         case Repute:
@@ -250,8 +255,27 @@ QVariant AddressBookModel::data(const QModelIndex& index, int role) const
     case Qt::ToolTipRole:
       switch ( (Columns)index.column() )
       {
-        case Ownership:
-          return tr("Ownership");
+        case ContactStatus:
+          if(current_contact.isOwn())
+            return tr("Ownership");
+          else if(current_contact.auth_status == bts::addressbook::i_block)
+            return tr("Blocked");
+          else if(current_contact.auth_status == bts::addressbook::accepted)
+            return tr("Authorized");
+          else if(current_contact.auth_status == bts::addressbook::accepted_chat)
+            return tr("Authorized chat");
+          else if(current_contact.auth_status == bts::addressbook::accepted_mail)
+            return tr("Authorized mail");
+          else if(current_contact.auth_status == bts::addressbook::sent_request)
+            return tr("Request sent");
+          else if(current_contact.auth_status == bts::addressbook::blocked_me)
+            return tr("Blocked me");
+          else if(current_contact.auth_status == bts::addressbook::unauthorized)
+            return tr("Unauthorized");
+          else if(current_contact.auth_status == bts::addressbook::denied)
+            return tr("Denied");
+          else
+            return QVariant();
         default:
           return QVariant();
       } //switch column in ToolTipRole
@@ -273,14 +297,6 @@ int AddressBookModel::storeContact(const Contact& contact_to_store)
     my->_contacts.push_back(contact_to_store);
     my->_contacts.back().wallet_index = next_wallet_index;
     endInsertRows();
-    //update completion model with new contact dac_id and fullname
-    int row_count = my->_contact_completion_model.rowCount();
-    my->_contact_completion_model.insertRows(row_count, 2);
-    completionIndex = my->_contact_completion_model.index(row_count);
-    my->_contact_completion_model.setData(completionIndex, contact_to_store.dac_id_string.c_str());
-    completionIndex = my->_contact_completion_model.index(row_count + 1);
-    my->_contact_completion_model.setData(completionIndex, contact_to_store.get_display_name().c_str());
-    //my->_completion_row_to_wallet_index.push_back(contact_to_store.wallet_index);
 
     //add fullname to completion list
     my->_address_book->store_contact(my->_contacts.back() );
@@ -304,26 +320,23 @@ int AddressBookModel::storeContact(const Contact& contact_to_store)
   my->_contacts[row] = contact_to_store;
   my->_address_book->store_contact(my->_contacts[row]);
 
-  //update completion model with modified contact dac_id and fullname
-  int completionRow = row * 2;
-  completionIndex = my->_contact_completion_model.index(completionRow);
-  my->_contact_completion_model.setData(completionIndex, contact_to_store.dac_id_string.c_str());
-  completionIndex = my->_contact_completion_model.index(completionRow + 1);
-  my->_contact_completion_model.setData(completionIndex, contact_to_store.get_display_name().c_str());
-
   Q_EMIT dataChanged(index(row, 0), index(row, NumColumns - 1) );
   return contact_to_store.wallet_index;
 }
 
 int AddressBookModel::getContactRow(const Contact& contact) const
 {
-  auto contact_iterator = std::lower_bound( my->_contacts.begin(), my->_contacts.end(), contact );
-  if (contact_iterator == my->_contacts.end())
-    FC_ASSERT(!"invalid contact id");
+  std::vector<Contact>::const_iterator contact_iterator = std::lower_bound(my->_contacts.begin(),
+    my->_contacts.end(), contact);
+
+  FC_ASSERT(contact_iterator != my->_contacts.end(), "invalid contact id");
+  FC_ASSERT(contact_iterator->wallet_index == contact.wallet_index,
+    "invalid contact id (wallet_index mismatch)");
+
   return contact_iterator - my->_contacts.begin();
 }
 
-const Contact& AddressBookModel::getContactById(int contact_id)
+const Contact& AddressBookModel::getContactById(int contact_id) const
 {
   Contact temp_contact;
   temp_contact.wallet_index = contact_id;
@@ -338,7 +351,7 @@ const Contact& AddressBookModel::getContactById(int contact_id)
   //FC_ASSERT( !"invalid contact id ${id}", ("id",contact_id) );
 }
 
-const Contact& AddressBookModel::getContact(const QModelIndex& index)
+const Contact& AddressBookModel::getContact(const QModelIndex& index) const
 {
   FC_ASSERT(index.row() < (int)my->_contacts.size() );
   return my->_contacts[index.row()];
@@ -346,39 +359,18 @@ const Contact& AddressBookModel::getContact(const QModelIndex& index)
 
 void AddressBookModel::reloadContacts()
 {
-  const std::unordered_map<uint32_t, bts::addressbook::wallet_contact>& loaded_contacts = my->_address_book->get_contacts();
+  const std::unordered_map<uint32_t, bts::addressbook::wallet_contact>& loaded_contacts =
+    my->_address_book->get_contacts();
   my->_contacts.clear();
   my->_contacts.reserve(loaded_contacts.size() );
-  QStringList                                                           completion_list;
+
   for (auto itr = loaded_contacts.begin(); itr != loaded_contacts.end(); ++itr)
   {
     auto contact = itr->second;
     ilog("loading contacts...");
     my->_contacts.push_back(Contact(contact) );
-
   }
-  //contacts must be sorted by wallet index
-  std::sort(my->_contacts.begin(), my->_contacts.end());
-  for(auto& contact : my->_contacts)
-  {
-    //add dac_id to completion list
-    //QString id = contact.dac_id_string.c_str();    
-    //Only one comletion for one contact
-    //add fullname to completion list
-    QString fullName = contact.get_display_name().c_str();
-    completion_list.push_back( fullName );
-  }
-  my->_contact_completion_model.setStringList(completion_list);
-}
-
-//QStringListModel* AddressBookModel::GetContactCompletionModel()
-//{
-//  return &(my->_contact_completion_model);
-//}
-
-QCompleter* AddressBookModel::getContactCompleter()
-{
-  return my->_contact_completer;
+  std::sort( my->_contacts.begin(), my->_contacts.end());
 }
 
 QModelIndex AddressBookModel::findModelIndex(const int wallet_index) const

@@ -2,7 +2,7 @@ import shutil
 import os
 import zipfile
 
-version = "0.5.3"
+version = "0.6.0"
 
 def zipdir(path, zip):
     for root, dirs, files in os.walk(path):
@@ -22,16 +22,25 @@ if __name__ == '__main__':
         if line:
             print("copy " + line)
             shutil.copy(line,binDir)
-    platformDir = binDir + '/platforms'
-    os.mkdir(platformDir)
-    print('platformDir=',platformDir)
-    shutil.copy('c:/gh/bin/platforms/qminimal.dll',platformDir)
-    shutil.copy('c:/gh/bin/platforms/qoffscreen.dll',platformDir)
-    shutil.copy('c:/gh/bin/platforms/qwindows.dll',platformDir)
+    #platformDir = binDir + '/platforms'
+    #os.mkdir(platformDir)
+    #print('platformDir=',platformDir)
+    #shutil.copy('c:/gh/bin/platforms/qminimal.dll',platformDir)
+    #shutil.copy('c:/gh/bin/platforms/qoffscreen.dll',platformDir)
+    #shutil.copy('c:/gh/bin/platforms/qwindows.dll',platformDir)
     
     #zip up files in bin dir to miner.zip
     zipfileName = binDir + '.zip'
     zip = zipfile.ZipFile(zipfileName,'w')
     zipdir(binDir, zip)
     zip.close()
-        
+    #copy pdb 
+    pdbDir = 'pdbs' + version
+	if os.path.exists(pdbDir)
+		shutil.rmtree(pdbDir)
+	os.mkdir(pdbDir)
+    shutil.copy('c:/gh/vs11/release/',pdbDir)
+    #zipfileName = pdbDir + '.zip'
+    #zip = zipfile.ZipFile(zipfileName,'w')
+	#zipdir(pdbDir,zip)
+	#zip.close()

@@ -40,7 +40,7 @@ fc::sha256 Hash(char* b, size_t len)
 
 uint64_t get_reward(uint64_t block_num)
   {
-  int      week = block_num / 2016;
+  int      week = (int)(block_num / 2016);
   uint64_t init_reward = 50 * COIN;
   for (int i = 0; i < week; ++i)
     {
@@ -228,11 +228,10 @@ public:
       tcp_serv.close();
       if (accept_loop_complete.valid() )
         {
-        accept_loop_complete.cancel();
-        accept_loop_complete.wait();
+        accept_loop_complete.cancel_and_wait();
         }
       }
-    catch (const fc::canceled_exception& e)
+    catch (const fc::canceled_exception&)
       {
       ilog("expected exception on closing tcp server\n");
       }
@@ -408,7 +407,7 @@ public:
         send_work(con, current_work);
         }
       }
-    catch (const fc::exception& e)
+    catch (const fc::exception&)
       {
       connections.erase(con.sock->get_socket().remote_endpoint() );
       }
@@ -454,7 +453,7 @@ public:
       fc::async( [ = ](){ process_connection(connections[s->get_socket().remote_endpoint()]); }
                  );
       }
-    catch (const fc::canceled_exception& e)
+    catch (const fc::canceled_exception&)
       {
       ilog("canceled accept operation");
       }
@@ -484,11 +483,11 @@ public:
         fc::usleep(fc::microseconds(1000) );
         }
       }
-    catch (fc::eof_exception& e)
+    catch (fc::eof_exception&)
       {
       ilog("accept loop eof");
       }
-    catch (fc::canceled_exception& e)
+    catch (fc::canceled_exception&)
       {
       ilog("accept loop canceled");
       }

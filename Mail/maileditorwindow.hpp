@@ -6,6 +6,7 @@
 #include <bts/bitchat/bitchat_message_db.hpp>
 
 #include "ATopLevelWindow.hpp"
+#include "BlockerDelegate.hpp"
 
 #include <QMainWindow>
 
@@ -19,6 +20,7 @@ class QModelIndex;
 class QTextCharFormat;
 
 class AddressBookModel;
+class Contact;
 class TFileAttachmentWidget;
 class MailFieldsWidget;
 class TMoneyAttachementWidget;
@@ -34,7 +36,8 @@ class Mailbox;
       (contact)
     - with explicit recipient list when reply/reply-all options are in action.
 */
-class MailEditorMainWindow : public ATopLevelWindow
+class MailEditorMainWindow : public ATopLevelWindow,
+                             protected IBlockerDelegate
   {
   Q_OBJECT
   public:
@@ -89,15 +92,24 @@ class MailEditorMainWindow : public ATopLevelWindow
     */
     void LoadMessage(Mailbox* mailbox, const TStoredMailMessage& srcMsgHeader, const TPhysicalMailMessage& srcMsg,
       TLoadForm loadForm);
+    void addContactCard (const Contact&);
 
   private:
     /// QWidget reimplementation to support query for save mod. contents.
     virtual void closeEvent(QCloseEvent* e) override;
     
   /// Other helper methods:
+    /** Dedicated to check if editor contents should be saved before closing. All checks against
+        save conditions should be rather done here instead of onSave method, even there is good
+        resoning for that (like message size checking).
+    */
     bool maybeSave();
     void setupEditorCommands();
-    bool isMsgSizeOK(const TPhysicalMailMessage& srcMsg);
+    /** Allows to check given message size against limit set by application. 
+        Returns true on success, false when limit has been exceeded - also reports a warning message
+        in this case.
+    */
+    bool checkMsgSize(const TPhysicalMailMessage& srcMsg);
     /// Updates UI status regarding to chosen alignment.
     void alignmentChanged(Qt::Alignment a);
     void fontChanged(const QFont& f);
@@ -118,6 +130,13 @@ class MailEditorMainWindow : public ATopLevelWindow
     QString transformMailBody(TLoadForm loadForm, const TStoredMailMessage& msgHeader,
       const TPhysicalMailMessage& srcMsg);
     void toggleReadOnlyMode();
+
+  private:
+    /// IBlockerDelegate interface description:
+    /// \see IBlockerDelegate interface description.
+    virtual void onBlockedImage() override;
+    /// \see IBlockerDelegate interface description.
+    virtual void onLoadBlockedImages() override;
 
   private slots:
     /// Actual implementation of save operation.
@@ -154,22 +173,32 @@ class MailEditorMainWindow : public ATopLevelWindow
     void onRecipientListChanged();
     /// Notification from attachment list widget about attachment list changes.
     void onAttachmentListChanged();
-    void onAddAttachments(QStringList files);
+    /// Notification sent when some file attachement item(s) will be pasted/dropeed onto document body.
+    void onFileAttachmentAdded(const QStringList& files);
+
+  /// Mail Reply/Forward
+    void onMailReplyTriggered();
+    void onMailReplyAllTriggered();
+    void onMailForwardTriggered();
 
   private:
     Ui::MailEditorWindow*    ui;
     /** Filled when mail editor has been opened with message already stored in Drafts. During save
         this old message should be replaced with new one.
     */
-    fc::optional<TStoredMailMessage> DraftMessage;
-    AddressBookModel&                ABModel;
-    IMailProcessor&                  MailProcessor;
-    MailFieldsWidget*                MailFields;
-    TMoneyAttachementWidget*         MoneyAttachement;
-    TFileAttachmentWidget*           FileAttachment;
-    QFontComboBox*                   FontCombo;
-    QComboBox*                       FontSize;
-    bool                             EditMode;
+    fc::optional<TStoredMailMessage>  DraftMessage;
+    AddressBookModel&                 ABModel;
+    IMailProcessor&                   MailProcessor;
+    MailFieldsWidget*                 MailFields;
+    TMoneyAttachementWidget*          MoneyAttachement;
+    TFileAttachmentWidget*            FileAttachment;
+    QFontComboBox*                    FontCombo;
+    QComboBox*                        FontSize;
+    bool                              EditMode;
+    fc::optional<fc::uint256>         _src_msg_id;
+    IMailProcessor::TMsgType          _msg_type;
+    ATopLevelWindowsContainer*        _parent;
+    TPhysicalMailMessage              _src_msg;
   };
 
 #endif ///__MAILEDITORWINDOW_HPP

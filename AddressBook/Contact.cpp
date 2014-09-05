@@ -1,5 +1,7 @@
 #include "Contact.hpp"
 
+#include "utils.hpp"
+
 #include <bts/application.hpp>
 
 #include <fc/reflect/variant.hpp>
@@ -81,6 +83,26 @@ void Contact::setNotes(const QString& phone)
   notes = phone.toStdString();
   }
 
+// returns percentage between 0 - 100 
+float Contact::getMiningEffort() const
+  {
+  auto profile = bts::application::instance()->get_profile();
+  auto cur_ident = profile->get_identity( dac_id_string );
+  return cur_ident.mining_effort;
+  }
+
+void Contact::setMiningEffort(float mining_effort)
+  { //Note: this edits identity, not contact object!
+  auto app = bts::application::instance();
+  auto profile = app->get_profile();
+  auto cur_ident = profile->get_identity( dac_id_string );
+  cur_ident.mining_effort = mining_effort;
+  profile->store_identity(cur_ident);
+  app->mine_name(cur_ident.dac_id_string,
+                 profile->get_keychain().get_identity_key(cur_ident.dac_id_string).get_public_key(),
+                 cur_ident.mining_effort);
+  }
+
 QString Contact::getLabel() const
   {
   QString label = (first_name + " " + last_name).c_str();
@@ -91,28 +113,7 @@ QString Contact::getLabel() const
 
 bool Contact::isOwn() const
   {
-  bts::application_ptr app = bts::application::instance();
-  bts::profile_ptr     currentProfile = app->get_profile();
-  bts::keychain        keyChain = currentProfile->get_keychain();
-
-  typedef std::set<fc::ecc::public_key_data> TPublicKeyIndex;
-  try
-    {
-    //put all public keys owned by profile into a set
-    TPublicKeyIndex myPublicKeys;
-    for (const auto& id : currentProfile->identities())
-      {
-      auto myPublicKey = keyChain.get_identity_key(id.dac_id_string).get_public_key();
-      fc::ecc::public_key_data keyData = myPublicKey;
-      myPublicKeys.insert(keyData);
-      }
-    //check if we have a public key in our set matching the contact's public key
-    return myPublicKeys.find(public_key) != myPublicKeys.end();
-    }
-  catch (const fc::exception&)
-    {
-    return false;
-    }
+  return Utils::isOwnedPublicKey(public_key);
   }
 
 int Contact::getAge() const
@@ -147,4 +148,12 @@ int Contact::getAge(const bts::addressbook::contact& id)
   else
     return 0;
   }
+
+bool Contact::isBlocked() const
+{
+  if(auth_status == bts::addressbook::i_block)
+    return true;
+  else
+    return false;
+}
 

@@ -1,20 +1,23 @@
 #include "ContactView.hpp"
 #include "ui_ContactView.h"
+
 #include "AddressBookModel.hpp"
+#include "Contact.hpp"
+#include "ContactGui.hpp"
+#include "KeyhoteeMainWindow.hpp"
 #include "public_key_address.hpp"
 #include "RequestAuthorization.hpp"
 
-#include <KeyhoteeMainWindow.hpp>
-#include <bts/application.hpp>
-#include <bts/address.hpp>
+#include "Identity/IdentityObservable.hpp"
 
 #include <fc/thread/thread.hpp>
 #include <fc/log/logger.hpp>
 
+#include <QFileDialog>
+#include <QMessageBox>
+#include <QStandardPaths>
 #include <QToolBar>
 #include <QToolButton>
-#include <QMessageBox>
-#include <QFileDialog>
 
 extern bool gMiningIsPossible;
 
@@ -49,22 +52,33 @@ bool ContactView::isChatSelected()
 
 void ContactView::sendChatMessage()
 {
+  if (getKeyhoteeWindow()->getConnectionProcessor()->GetPeerConnectionCount() == 0)
+  {
+    QMessageBox::warning(this, tr("Application"), 
+      tr("No connection to send chat message."), QMessageBox::Ok);
+    
+    return;
+  }
+
   auto msg = ui->chat_input->toPlainText();
-  if (msg.size() != 0)
+  if (msg.isEmpty())
+  {
+    return;
+  }
+    
+  auto identity = ui->widget_Identity->currentIdentity();
+  if (identity != nullptr)
   {
     auto                               app = bts::application::instance();
     auto                               profile = app->get_profile();
-    auto                               idents = profile->identities();
-    bts::bitchat::private_text_message text_msg(msg.toUtf8().constData() );
-    if (idents.size() )
-    {
-      fc::ecc::private_key my_priv_key = profile->get_keychain().get_identity_key(idents[0].dac_id_string);
-      app->send_text_message(text_msg, _current_contact.public_key, my_priv_key);
-      appendChatMessage("me", msg);
-    }
+    bts::bitchat::private_text_message text_msg(msg.toUtf8().constData());
 
-    ui->chat_input->setPlainText(QString());
+    fc::ecc::private_key my_priv_key = profile->get_keychain().get_identity_key(identity->dac_id_string);
+    app->send_text_message(text_msg, _current_contact.public_key, my_priv_key);
+    appendChatMessage("me", msg);
   }
+
+  ui->chat_input->setPlainText(QString());
 }
 
 void ContactView::appendChatMessage(const QString& from, const QString& msg, const QDateTime& date_time) //DLNFIX2 improve formatting later
@@ -99,7 +113,7 @@ ContactView::ContactView(QWidget* parent)
   ui->setupUi(this);
   _addingNewContact = false;
   _editing = false;
-  _modyfied = false;
+  _modified = false;
 
    message_tools = new QToolBar( ui->toolbar_container );
   QGridLayout* grid_layout = new QGridLayout(ui->toolbar_container);
@@ -116,10 +130,13 @@ ContactView::ContactView(QWidget* parent)
   //default contact view: info page
   ui->contact_pages->setCurrentIndex(info);
   
+  /// add identity observer
+  IdentityObservable::getInstance().addObserver( ui->widget_Identity );
+
   send_mail = new QAction( QIcon( ":/images/128x128/contact_info_send_mail.png"), tr("Mail"), this);
   chat_contact = new QAction( QIcon( ":/images/chat.png"), tr("Chat"), this);  
   edit_contact = new QAction( QIcon(":/images/128x128/contact_info_edit.png"), tr("Edit"), this);
-  share_contact = new QAction(QIcon(":/images/read-icon.png"), tr("Share (need new icon)"), this);
+  share_contact = new QAction(QIcon(":/images/128x128/contact_share.png"), tr("Share contact"), this);
   request_contact = new QAction( QIcon(":/images/128x128/contact_info_request_authorisation.png"), tr("Request authorisation"), this);
   save_contact = new QAction( QIcon(":/images/128x128/contact_info_save.png"), tr( "Save"), this );
   cancel_edit_contact = new QAction( QIcon(":/images/128x128/contact_info_cancel_edit.png"), tr("Discard changes"), this);
@@ -143,7 +160,6 @@ ContactView::ContactView(QWidget* parent)
 
   ui->khid_pubkey->setMode(KeyhoteeIDPubKeyWidget::ModeWidget::ShowContact);
 
-  //ui->chat_conversation->setHtml( "<html><head></head><body>Hello World<br/></body></html>" );
   connect(save_contact, &QAction::triggered, this, &ContactView::onSave);
   connect(cancel_edit_contact, &QAction::triggered, this, &ContactView::onCancel);
   connect(edit_contact, &QAction::triggered, this, &ContactView::onEdit);
@@ -163,21 +179,27 @@ ContactView::ContactView(QWidget* parent)
 
   connect(ui->contact_pages, &QTabWidget::currentChanged, this, &ContactView::currentTabChanged);
 
-  connect(ui->mining_effort_slider, &QSlider::valueChanged, this, &ContactView::onSliderChanged);
+  connect(ui->mining_effort_slider, &QSlider::valueChanged, this, &ContactView::onMiningEffortSliderChanged);
   connect(ui->khid_pubkey, &KeyhoteeIDPubKeyWidget::currentState, this, &ContactView::onStateWidget);
 
-  keyEdit(false);
+  contactEditable(false);
   ui->chat_input->installEventFilter(this);
 
   checkSendMailButton();
   setContact(Contact() );
 }
 
+ContactView::~ContactView()
+{
+  IdentityObservable::getInstance().deleteObserver( ui->widget_Identity );
+  delete ui;
+}
+
 void ContactView::onEdit()
 {
   setAddingNewContact(false);   //editing  
-  doDataExchange (false);
-  keyEdit(true);   //and set focus on the first field
+  ToDialog();
+  contactEditable(true);   //and set focus on the first field
   ui->contact_pages->setCurrentIndex(info);
   ui->info_stack->setCurrentWidget(ui->info_edit);
 }
@@ -193,8 +215,8 @@ void ContactView::setAddingNewContact(bool addNew)
 
 void ContactView::addNewContact ()
 {  
-  doDataExchange (false);
-  keyEdit(true);
+  ToDialog();
+  contactEditable(true);
 }
 
 void ContactView::setPublicKey(const QString& public_key_string)
@@ -206,7 +228,7 @@ void ContactView::onSave()
 {
   try
   {
-    if (doDataExchange (true))
+    if (FromDialog())
     {
       if (_current_record)
       {
@@ -241,7 +263,11 @@ void ContactView::onSave()
       _current_contact.privacy_setting = bts::addressbook::secret_contact;
       int idxNewContact = _address_book->storeContact(_current_contact);
 
-      keyEdit(false);
+      /// notify identity observers
+      if (_current_contact.isOwn())
+        IdentityObservable::getInstance().notify(_current_contact);
+
+      contactEditable(false);
       emit savedNewContact(idxNewContact);
     }    
   }
@@ -250,9 +276,9 @@ void ContactView::onSave()
 
 void ContactView::onCancel()
 {
-  setModyfied(false);
-  doDataExchange (false);
-  keyEdit(false);
+  setModified(false);
+  ToDialog();
+  contactEditable(false);
   if (isAddingNewContact())
   {
     emit canceledNewContact();
@@ -285,28 +311,34 @@ void ContactView::onMail()
 
 void ContactView::onShareContact()
 {
-  QMessageBox::warning(this, tr("Warning"), tr("Not supported"));
+  QList<const Contact*> contacts;
+  contacts.push_back(&_current_contact);
+
+  getKeyhoteeWindow()->shareContact(contacts);
 }
 
 void ContactView::onRequestContact()
 {
-  RequestAuthorization *request = new RequestAuthorization(this);
-  if(!ui->khid_pubkey->getKeyhoteeID().isEmpty() && gMiningIsPossible)
-    request->setKeyhoteeID(ui->khid_pubkey->getKeyhoteeID());
+  RequestAuthorization *request = new RequestAuthorization(this,
+    *getKeyhoteeWindow()->getConnectionProcessor(), _address_book);
+  connect(request, &RequestAuthorization::authorizationStatus, getKeyhoteeWindow(), &KeyhoteeMainWindow::onUpdateAuthoStatus);
+
+  if(ui->khid_pubkey->getKeyhoteeID().isEmpty() == false && gMiningIsPossible)
+    request->setKeyhoteeID(_current_contact.dac_id_string.c_str());
   else
-    request->setPublicKey(ui->khid_pubkey->getPublicKeyText());
+  {
+    std::string public_key_string = public_key_address(_current_contact.public_key.serialize());
+    request->setPublicKey(public_key_string.c_str());
+  }
   request->enableAddContact(false);
   request->show();
 }
-
-ContactView::~ContactView()
-{}
 
 void ContactView::setContact(const Contact& current_contact)
 {
     _current_contact = current_contact;
     ui->khid_pubkey->setContact(_current_contact);
-    doDataExchange (false);
+    ToDialog();
 }
 
 Contact ContactView::getContact() const
@@ -316,12 +348,12 @@ Contact ContactView::getContact() const
 
 void ContactView::firstNameChanged(const QString& /*name*/)
 {
-  setModyfied();
+  setModified();
 }
 
 void ContactView::lastNameChanged(const QString& /*name*/)
 {
-  setModyfied();
+  setModified();
 }
 
 void ContactView::checkSendMailButton()
@@ -331,11 +363,14 @@ void ContactView::checkSendMailButton()
 
     auto idents = profile->identities();
     send_mail->setEnabled(idents.size() > 0);
+
+    request_contact->setEnabled(idents.size() > 0 && !_current_contact.isOwn() && !isEditing());
 }
 
 void ContactView::setAddressBook(AddressBookModel* addressbook)
 {
   _address_book = addressbook;
+  ui->khid_pubkey->setAddressBook(addressbook);
 }
 
 AddressBookModel* ContactView::getAddressBook() const
@@ -343,7 +378,7 @@ AddressBookModel* ContactView::getAddressBook() const
   return _address_book;
 }
 
-void ContactView::keyEdit(bool enable)
+void ContactView::contactEditable(bool enable)
 {
   _editing = enable;
   ui->firstname->setEnabled(enable);
@@ -387,22 +422,22 @@ void ContactView::keyEdit(bool enable)
   send_mail->setEnabled(!enable);
   chat_contact->setEnabled(!enable);
   edit_contact->setEnabled(!enable);
-  share_contact->setEnabled(false);
-  request_contact->setEnabled(!enable);
+  share_contact->setEnabled(!enable);
+  request_contact->setEnabled(!enable && !is_owner);
 
   ui->contact_pages->setTabEnabled(chat, !enable);
 
   if (enable)
   {
     ui->firstname->setFocus();
-    setModyfied(false);
+    setModified(false);
   }
   checkSendMailButton();
 }
 
 bool ContactView::CheckSaving()
 {
-  if (isEditing() && isModyfied())
+  if (isEditing() && isModified())
   {
     QMessageBox::StandardButton ret;
     ret = QMessageBox::question(this, tr("Application"),
@@ -433,10 +468,10 @@ bool ContactView::CheckSaving()
       {
         onCancel();
       }
-      setModyfied(false);
+      setModified(false);
     }
   }
-  else if (isEditing() && !isModyfied())
+  else if (isEditing() && !isModified())
   {
     onCancel();
   }
@@ -462,96 +497,42 @@ void ContactView::onIconSearch()
   }
 }
 
-
-bool ContactView::doDataExchange (bool valid)
+void ContactView::ToDialog()
 {
-  if (! valid)
+  if (isAddingNewContact ()) 
   {
-    if (isAddingNewContact ()) 
-    {
-      setValid(false);
-      ui->firstname->setText("");
-      ui->lastname->setText("");
-      ui->khid_pubkey->setKeyhoteeID("");
-      ui->icon_view->setIcon( QIcon(":/images/user.png") );
-      ui->notes->setPlainText("");
-      ui->email->setText("");
-      ui->phone->setText("");
-      ui->khid_pubkey->setPublicKey("");
-      ui->privacy_comboBox->setCurrentIndex (0);
-      ui->contact_pages->setCurrentIndex(info);
-    }
-    else 
-    {
-      setValid(true);
-      /** TODO... restore this kind of check
-      if( _current_contact.bit_id_public_key != _current_contact.public_key  )
-      {
-        ui->id_status->setText(
-                   tr( "Warning! Keyhotee ID %1 no longer matches known public key!" ).arg(_current_contact.bit_id) );
-      }
-      */
-      ui->firstname->setText( _current_contact.first_name.c_str() );
-      ui->lastname->setText( _current_contact.last_name.c_str() );
-
-      if(!_current_contact.dac_id_string.c_str() && gMiningIsPossible)
-        ui->khid_pubkey->setKeyhoteeID(_current_contact.dac_id_string.c_str());
-      else
-      {
-        std::string public_key_string = public_key_address( _current_contact.public_key );
-        ui->khid_pubkey->setPublicKey( public_key_string.c_str() );
-      }
-      ui->icon_view->setIcon( _current_contact.getIcon() );
-      ui->notes->setPlainText( _current_contact.notes.c_str() );
-      //ui->email->setText( _current_contact.email_address );
-      //ui->phone->setText( _current_contact.phone_number );
-      //privacy_comboBox
-      ui->keyhotee_founder->setVisible(!_editing && _current_contact.isKeyhoteeFounder());
-      //DLNFIX TODO: add check to see if we are synced on blockchain. If not synched,
-      //             display "Keyhotee ledger not accessible"
-      bool is_owner = _current_contact.isOwn();
-      if(is_owner)
-      {
-    #ifdef ALPHA_RELEASE
-        QString keyhotee_id = ui->khid_pubkey->getKeyhoteeID();
-        QString founder_code = _current_contact.notes.c_str();
-        display_founder_key_status(keyhotee_id,founder_code,ui->keyhoteeID_status);
-    #else
-        ui->mining_effort_slider->setValue( static_cast<int>(_current_contact.getMiningEffort()));
-        //if registered keyhoteeId
-        auto name_record = bts::application::instance()->lookup_name(_current_contact.dac_id_string);
-        if (name_record)
-        {
-          //  if keyhoteeId's public key matches ours.
-          if (name_record->active_key == _current_contact.public_key)
-          { //Registered to us
-            ui->keyhoteeID_status->setStyleSheet("QLabel { background-color : green; color : black; }");
-            ui->keyhoteeID_status->setText(tr("Registered"));
-          }
-          else //Not Available (someone else owns it)
-          {
-            ui->keyhoteeID_status->setStyleSheet("QLabel { background-color : red; color : black; }");
-            ui->keyhoteeID_status->setText(tr("Not Available"));
-          }
-        }
-        else //Unregistered (no one has it yet)
-        {
-          ui->keyhoteeID_status->setStyleSheet("QLabel { background-color : yellow; color : black; }");
-          ui->keyhoteeID_status->setText(tr("Unregistered"));
-        }
-    #endif
-      }
-      ui->keyhoteeID_status->setVisible(!_editing && is_owner);
-      ui->authorization_status->setVisible(!_editing && !is_owner);
-      ui->mining_effort->setVisible(is_owner);
-      ui->mining_effort_slider->setVisible(is_owner);
-      ui->mining_effort_slider->setDisabled(!_editing);
-      ui->mining_effort_label->setVisible(is_owner);
-      ui->mining_effort_label_2->setVisible(is_owner);
-    }
+    setValid(false);
+    ui->firstname->setText("");
+    ui->lastname->setText("");
+    ui->khid_pubkey->setKeyhoteeID("");
+    ui->icon_view->setIcon( QIcon(":/images/user.png") );
+    ui->notes->setPlainText("");
+    ui->email->setText("");
+    ui->phone->setText("");
+    ui->khid_pubkey->setPublicKey("");
+    ui->privacy_comboBox->setCurrentIndex (0);
+    ui->contact_pages->setCurrentIndex(info);
   }
-  else
+  else 
   {
+    setValid(true);
+
+    refreshDialog(_current_contact);
+
+    bool is_owner = _current_contact.isOwn();
+    ui->keyhoteeID_status->setVisible(!_editing && is_owner);
+    ui->authorization_status->setVisible(!_editing && !is_owner);
+    ui->mining_effort->setVisible(is_owner);
+    ui->mining_effort_slider->setVisible(is_owner);
+    ui->mining_effort_slider->setDisabled(!_editing);
+    ui->mining_effort_label->setVisible(is_owner);
+    ui->mining_effort_label_2->setVisible(is_owner);
+  }
+  setEnabledSaveContact();
+}
+
+bool ContactView::FromDialog()
+{
     _current_contact.first_name     = ui->firstname->text().toUtf8().constData();
     _current_contact.last_name      = ui->lastname->text().toUtf8().constData();
     _current_contact.dac_id_string  = ui->khid_pubkey->getKeyhoteeID().toUtf8().constData();
@@ -560,49 +541,57 @@ bool ContactView::doDataExchange (bool valid)
     //_current_contact.email_address = ui->email->text().toStdString();
     //_current_contact.phone_number = ui->phone->text().toStdString();
     //privacy_comboBox
-  }
-  setEnabledSaveContact ();
-  return true;
+    setEnabledSaveContact();
+    return true; //currently no way to have bad data, but original coding allowed it, so I've left this for now
 }
 
-void ContactView::checkcontactstatus()
+void ContactView::checkKeyhoteeIdStatus()
 {
+  ui->keyhotee_founder->setVisible(!_editing && _current_contact.isKeyhoteeFounder());
+  bool is_owner = _current_contact.isOwn();
+  if(is_owner)
+  {
+#ifdef ALPHA_RELEASE
+    QString keyhotee_id = ui->khid_pubkey->getKeyhoteeID();
+    QString founder_code = _current_contact.notes.c_str();
+    display_founder_key_status(keyhotee_id,founder_code,ui->keyhoteeID_status);
+#else
+    ui->mining_effort_slider->setValue( static_cast<int>(_current_contact.getMiningEffort()));
+    //if registered keyhoteeId
     auto name_record = bts::application::instance()->lookup_name(_current_contact.dac_id_string);
-    ui->keyhotee_founder->setVisible(!_editing && _current_contact.isKeyhoteeFounder());
     if (name_record)
-      {
+    {
       //  if keyhoteeId's public key matches ours.
       if (name_record->active_key == _current_contact.public_key)
-        { //Registered to us
+      { //Registered to us
         ui->keyhoteeID_status->setStyleSheet("QLabel { background-color : green; color : black; }");
         ui->keyhoteeID_status->setText(tr("Registered"));
-        }
+      }
       else //Not Available (someone else owns it)
-        {
+      {
         ui->keyhoteeID_status->setStyleSheet("QLabel { background-color : red; color : black; }");
         ui->keyhoteeID_status->setText(tr("Not Available"));
-        }
       }
+    }
     else //Unregistered (no one has it yet)
-      {
+    {
       ui->keyhoteeID_status->setStyleSheet("QLabel { background-color : yellow; color : black; }");
       ui->keyhoteeID_status->setText(tr("Unregistered"));
-      }
-
-  // set authorization state
-  ui->authorization_status->setStyleSheet("QLabel { color : red; }");
-  ui->authorization_status->setText(tr("Unauthorized"));
+    }
+  #endif
+  } //if (is_owner)
 }
+
 void ContactView::setEnabledSaveContact ()
 {
-  save_contact->setEnabled(_validForm && isEditing() && isModyfied());
+  save_contact->setEnabled(_validForm && isEditing() && isModified());
 }
 
-void ContactView::setModyfied(bool modyfied)
+void ContactView::setModified(bool modified)
 {
   if (isEditing())
   {
-    _modyfied = modyfied;
+    _modified = modified;
     setEnabledSaveContact ();
     }
   }
@@ -633,9 +622,17 @@ void ContactView::onSend ()
   ui->chat_input->setFocus ();
   }
 
+void ContactView::onMiningEffortSliderChanged(int mining_effort)
+  {
+  _current_contact.setMiningEffort(mining_effort);
+  //DLN right now this is set in identity object, not in contact, so it's immediate and
+  //non-cancelable edit, eventually we probably should somehow fix this.
+  setModified();
+  }
+
 void ContactView::onStateWidget(KeyhoteeIDPubKeyWidget::CurrentState state)
 {
-  setModyfied();
+  setModified();
 
   switch(state)
   {
@@ -647,9 +644,99 @@ void ContactView::onStateWidget(KeyhoteeIDPubKeyWidget::CurrentState state)
       setValid(true);
       break;
     case KeyhoteeIDPubKeyWidget::CurrentState::IsStored:
+    case KeyhoteeIDPubKeyWidget::CurrentState::IsIdentity:
       break;
     default:
       assert(false);
   }
 }
 
+void ContactView::setContactFromvCard(const Contact &contact)
+{
+  refreshDialog(contact);
+
+  setModified();
+}
+
+void ContactView::checkAuthorizationStatus()
+{
+  bts::addressbook::authorization_status status;
+
+  try
+  {
+    auto contact = bts::get_profile()->get_addressbook()->get_contact_by_public_key(_current_contact.public_key);
+    if(contact)
+      status = contact->auth_status;
+    else
+      status = bts::addressbook::authorization_status::unauthorized;
+  }
+  catch (const fc::exception&)
+  {
+    status = bts::addressbook::authorization_status::unauthorized;
+  }
+
+  _current_contact.auth_status = status;
+
+  if(status == bts::addressbook::authorization_status::sent_request)
+  {
+    ui->authorization_status->setText( tr("Request sent") );
+  }
+  else if(status == bts::addressbook::authorization_status::accepted)
+  {
+    ui->authorization_status->setText( tr("Authorized") );
+  }
+  else if(status == bts::addressbook::authorization_status::accepted_chat)
+  {
+    ui->authorization_status->setText(tr("Authorized chat"));
+  }
+  else if(status == bts::addressbook::authorization_status::accepted_mail)
+  {
+    ui->authorization_status->setText(tr("Authorized mail"));
+  }
+  else if(status == bts::addressbook::authorization_status::denied)
+  {
+    ui->authorization_status->setText( tr("Denied") );
+  }
+  else if(status == bts::addressbook::authorization_status::i_block)
+  {
+    ui->authorization_status->setText( tr("Blocked") );
+  }
+  else if(status == bts::addressbook::authorization_status::blocked_me)
+  {
+    ui->authorization_status->setText(tr("Blocked me"));
+  }
+  else
+  {
+    ui->authorization_status->setText( tr("Unauthorized") );
+  }
+}
+
+void ContactView::refreshDialog(const Contact &contact)
+{
+  /** TODO... restore this kind of check
+    if( _current_contact.bit_id_public_key != _current_contact.public_key  )
+    {
+      ui->id_status->setText(
+                  tr( "Warning! Keyhotee ID %1 no longer matches known public key!" ).arg(_current_contact.bit_id) );
+    }
+    */
+  ui->firstname->setText( contact.first_name.c_str() );
+  ui->lastname->setText( contact.last_name.c_str() );
+
+  //set public key from contact record initially
+  std::string public_key_string = public_key_address( contact.public_key );
+  ui->khid_pubkey->setPublicKey( public_key_string.c_str() );
+  //set keyhoteeID from contact record, this may override public key from contact record
+  //if mining is enabled and ID is registered in blockchain
+  ui->khid_pubkey->setKeyhoteeID(contact.dac_id_string.c_str());
+
+  ui->icon_view->setIcon( contact.getIcon() );
+  ui->notes->setPlainText( contact.notes.c_str() );
+  //ui->email->setText( _current_contact.email_address );
+  //ui->phone->setText( _current_contact.phone_number );
+  //privacy_comboBox
+  //DLNFIX TODO: add check to see if we are synced on blockchain. If not synched,
+  //             display "Keyhotee ledger not accessible"
+  checkKeyhoteeIdStatus();
+  checkAuthorizationStatus();
+}

@@ -9,7 +9,8 @@ enum MailboxChildren
   Inbox,
   Drafts,
   Outbox,
-  Sent
+  Sent,
+  Spam
   };
 
 enum SidebarItemTypes
@@ -17,14 +18,8 @@ enum SidebarItemTypes
   IdentityItem  = 1000 + 2,
   MailboxItem   = 1000 + 3,
   ContactItem   = 1000 + 4,
-  RequestItem   = 1000 + 5
-  };
-
-enum WalletsChildren
-  {
-  Bitcoin,
-  BitShares,
-  Litecoin
+  RequestItem   = 1000 + 5,
+  WalletItem    = 1000 + 6
   };
 
 class TreeWidgetCustom : public QTreeWidget
@@ -37,6 +32,7 @@ public:
 
 protected:
   virtual bool viewportEvent(QEvent *event) override;
+  virtual void keyPressEvent(QKeyEvent *event) override;
   void showContextMenu(QTreeWidgetItem* item, const QPoint& globalPos);
 
 private slots:

@@ -5,13 +5,15 @@
 #include "ATopLevelWindowsContainer.hpp"
 #include "FileAttachmentDialog.hpp"
 #include "KeyhoteeMainWindow.hpp"
-#include "MailboxModel.hpp"
 #include "maileditorwindow.hpp"
+
+#include "../qtreusable/HeaderWidget.hpp"
 
 #include <bts/profile.hpp>
 #include <fc/reflect/variant.hpp>
 
 #include <QMessageBox>
+#include <QMetaEnum>
 #include <QTextEdit>
 #include <QToolBar>
 
@@ -64,23 +66,41 @@ void Mailbox::onDoubleClickedItem(QModelIndex index)
   mailEditor->show();
   }
 
+void Mailbox::onOpenMail()
+{
+  QItemSelectionModel* selection_model = ui->inbox_table->selectionModel();
+  QModelIndexList      indexes = selection_model->selectedRows();
+  onDoubleClickedItem(indexes.first());
+}
+void Mailbox::onMarkAsUnreadMail()
+{
+  QItemSelectionModel* selection_model = ui->inbox_table->selectionModel();
+  QModelIndexList      indexes = selection_model->selectedRows();
+  QSortFilterProxyModel* model = dynamic_cast<QSortFilterProxyModel*>(ui->inbox_table->model());
+  MailboxModel* sourceModel = dynamic_cast<MailboxModel*>(model->sourceModel());
+  foreach(QModelIndex index, indexes)
+  {
+    QModelIndex mapped_index = model->mapToSource(index);
+    sourceModel->markMessageAsUnread(mapped_index);
+  }
+}
 void Mailbox::showCurrentMail(const QModelIndex &selected,
                               const QModelIndex &deselected)
   {}
 
-void Mailbox::checksendmailbuttons()
+void Mailbox::checkSendMailButtons()
 {
     QItemSelectionModel* selection_model = ui->inbox_table->selectionModel();
     QModelIndexList      indexes = selection_model->selectedRows();
 
-    bool                 oneEmailSelected = (indexes.size() == 1);
-    auto app = bts::application::instance();
-    auto profile = app->get_profile();
+    bool  oneEmailSelected = (indexes.size() == 1);
+    bool  identity = isIdentity();
 
-    auto idents = profile->identities();
-    reply_mail->setEnabled(oneEmailSelected && (idents.size() > 0));
-    reply_all_mail->setEnabled(oneEmailSelected && (idents.size() > 0));
-    forward_mail->setEnabled(oneEmailSelected && (idents.size() > 0));
+    ui->actionReply->setEnabled(oneEmailSelected && identity);
+    ui->actionReply_All->setEnabled(oneEmailSelected && identity);
+    ui->actionForward->setEnabled(oneEmailSelected && identity);
+
+    getKeyhoteeWindow()->onEnableMailButtons(oneEmailSelected && identity);
 }
 
 void Mailbox::onSelectionChanged(const QItemSelection &selected,
@@ -90,23 +110,17 @@ void Mailbox::onSelectionChanged(const QItemSelection &selected,
   QModelIndexList      indexes = selection_model->selectedRows();
   //disable reply buttons if more than one email selected
   bool                 oneEmailSelected = (indexes.size() == 1);
-  auto app = bts::application::instance();
-  auto profile = app->get_profile();
 
-  auto idents = profile->identities();
-  reply_mail->setEnabled(oneEmailSelected && (idents.size() > 0));
-  reply_all_mail->setEnabled(oneEmailSelected && (idents.size() > 0));
-  forward_mail->setEnabled(oneEmailSelected && (idents.size() > 0));
+  ui->actionOpen->setEnabled(oneEmailSelected);
+  ui->actionMark_as_unread->setEnabled(indexes.size() > 0);
+  ui->actionDelete->setEnabled(indexes.size() > 0);
 
-  reply_mail->setEnabled(idents.size() > 0);
-  reply_all_mail->setEnabled(idents.size() > 0);
-  forward_mail->setEnabled(idents.size() > 0);
+  checkSendMailButtons();
 
   //display selected email(s) in message preview window
   if (oneEmailSelected)
     {
-    refreshMessageViewer();
-    getKeyhoteeWindow()->setEnabledMailActions(true);
+    refreshMessageViewer();    
     }
   else
     {
@@ -116,7 +130,6 @@ void Mailbox::onSelectionChanged(const QItemSelection &selected,
       ui->mail_viewer->setCurrentWidget(ui->info_1);
     //TODO: not implemented ui->current_message->displayMailMessages(indexes,selection_model);
 
-    getKeyhoteeWindow()->setEnabledMailActions(false);
     getKeyhoteeWindow()->setEnabledAttachmentSaveOption( _attachmentSelected = false );
     }
 
@@ -136,59 +149,45 @@ void Mailbox::initial(IMailProcessor& mailProcessor, MailboxModel* model, InboxT
   _mailProcessor = &mailProcessor;
   _mainWindow = parentKehoteeMainW;
 
+  /// convert enum InboxType to string
+  const QMetaObject &metaObject = Mailbox::staticMetaObject;
+  QMetaEnum metaEnum = metaObject.enumerator(0);
+  ui->header->initial(tr(metaEnum.key(_type)));
+
+  MailTable::InitialSettings settings;
+  readSettings(&settings);
+
   //enable sorting the mailbox
   QSortFilterProxyModel* proxyModel = new MailSortFilterProxyModel();
   proxyModel->setSourceModel(model);
   ui->inbox_table->setModel(proxyModel);
-  //ui->inbox_table->sortByColumn(0, Qt::AscendingOrder);
-  //ui->inbox_table->setModel( model );
 
-  ui->inbox_table->setShowGrid(false);
+  QHeaderView *horHeader = ui->inbox_table->horizontalHeader();
 
-  ui->inbox_table->verticalHeader()->setDefaultSectionSize(20);
-
-  ui->inbox_table->horizontalHeader()->resizeSection(MailboxModel::To, 120);
-  ui->inbox_table->horizontalHeader()->resizeSection(MailboxModel::Subject, 300);
-  ui->inbox_table->horizontalHeader()->resizeSection(MailboxModel::DateReceived, 140);
-  ui->inbox_table->horizontalHeader()->resizeSection(MailboxModel::From, 120);
-  ui->inbox_table->horizontalHeader()->resizeSection(MailboxModel::DateSent, 140);
   if (_type == Inbox)
     {
-    ui->inbox_table->horizontalHeader()->hideSection(MailboxModel::Status);
-    ui->inbox_table->horizontalHeader()->hideSection(MailboxModel::DateSent);
-    
-    ui->inbox_table->sortByColumn(_mainWindow->getMailSettings().sortColumnInbox,
-       static_cast<Qt::SortOrder>(_mainWindow->getMailSettings().sortOrderInbox) );
     }
   else if (_type == Sent)
     {
-    ui->inbox_table->horizontalHeader()->swapSections(MailboxModel::To, MailboxModel::From);
-    ui->inbox_table->horizontalHeader()->swapSections(MailboxModel::DateReceived, MailboxModel::DateSent);
-    ui->inbox_table->horizontalHeader()->hideSection(MailboxModel::DateReceived);
-
-    ui->inbox_table->sortByColumn(_mainWindow->getMailSettings().sortColumnSent,
-       static_cast<Qt::SortOrder>(_mainWindow->getMailSettings().sortOrderSent) );
+    horHeader->swapSections(MailboxModel::To, MailboxModel::From);
+    horHeader->swapSections(MailboxModel::DateReceived, MailboxModel::DateSent);
     }
   else if (_type == Drafts)
     {
-    ui->inbox_table->horizontalHeader()->swapSections(MailboxModel::To, MailboxModel::From);
-    ui->inbox_table->horizontalHeader()->swapSections(MailboxModel::DateReceived, MailboxModel::DateSent);
-    ui->inbox_table->horizontalHeader()->hideSection(MailboxModel::DateReceived);
-    ui->inbox_table->horizontalHeader()->hideSection(MailboxModel::Status);
-
-    ui->inbox_table->sortByColumn(_mainWindow->getMailSettings().sortColumnDraft,
-       static_cast<Qt::SortOrder>(_mainWindow->getMailSettings().sortOrderDraft) );
+    horHeader->swapSections(MailboxModel::To, MailboxModel::From);
+    horHeader->swapSections(MailboxModel::DateReceived, MailboxModel::DateSent);
     }
   else if (_type == Outbox)
     {
-    ui->inbox_table->sortByColumn(_mainWindow->getMailSettings().sortColumnOutbox,
-       static_cast<Qt::SortOrder>(_mainWindow->getMailSettings().sortOrderOutbox) );
     }
+  else if(_type == Spam)
+  {
+  }
 
-  ui->inbox_table->horizontalHeader()->setSectionsMovable(true);
-  ui->inbox_table->horizontalHeader()->setSortIndicatorShown(true);
-  ui->inbox_table->horizontalHeader()->setSectionsClickable(true);
-  ui->inbox_table->horizontalHeader()->setHighlightSections(true);
+  
+  QList<MailboxModel::Columns> defaultColumns;
+  getDefaultColumns(&defaultColumns);
+  ui->inbox_table->initial(settings, defaultColumns);
 
   //connect signals for the new selection model (created by setModel call)
   QItemSelectionModel* inbox_selection_model = ui->inbox_table->selectionModel();
@@ -196,42 +195,49 @@ void Mailbox::initial(IMailProcessor& mailProcessor, MailboxModel* model, InboxT
   connect(inbox_selection_model, &QItemSelectionModel::currentChanged, this, &Mailbox::showCurrentMail);
   connect(ui->inbox_table, SIGNAL(doubleClicked(QModelIndex)), this, SLOT(onDoubleClickedItem(QModelIndex)));
 
-  connect(reply_mail, &QAction::triggered, this, &Mailbox::onReplyMail);
-  connect(reply_all_mail, &QAction::triggered, this, &Mailbox::onReplyAllMail);
-  connect(forward_mail, &QAction::triggered, this, &Mailbox::onForwardMail);
-  connect(delete_mail, &QAction::triggered, this, &Mailbox::onDeleteMail);
-
-  // hidden Coin Attachment Column
-  ui->inbox_table->hideColumn(MailboxModel::Money);
-  // hidden Chat Column
-  ui->inbox_table->hideColumn(MailboxModel::Chat);
+  connect(ui->actionOpen, &QAction::triggered, this, &Mailbox::onOpenMail);
+  connect(ui->actionMark_as_unread, &QAction::triggered, this, &Mailbox::onMarkAsUnreadMail);
+  connect(ui->actionDelete, &QAction::triggered, this, &Mailbox::onDeleteMail);
+  connect(ui->actionReply, &QAction::triggered, this, &Mailbox::onReplyMail);
+  connect(ui->actionReply_All, &QAction::triggered, this, &Mailbox::onReplyAllMail);
+  connect(ui->actionForward, &QAction::triggered, this, &Mailbox::onForwardMail);
   }
 
 void Mailbox::setupActions()
   {
-  reply_mail = new QAction(QIcon(":/images/mail_reply.png"), tr("Reply"), this);
-  reply_all_mail = new QAction(QIcon(":/images/mail_reply_all.png"), tr("Reply All"), this);
-  forward_mail = new QAction(QIcon(":/images/mail_forward.png"), tr("Forward"), this);
-  delete_mail = new QAction(QIcon(":/images/delete_icon.png"), tr("Delete"), this);
-  //delete_mail->setShortcut(Qt::Key_Delete);
-  //add actions to MailViewer toolbar
+  /// Add actions to MailViewer toolbar
   QToolBar* message_tools = ui->current_message->message_tools;
   auto app = bts::application::instance();
   auto profile = app->get_profile();
 
-  auto idents = profile->identities();
-  if(idents.size() == 0) {
-    reply_mail->setEnabled(false);
-    reply_all_mail->setEnabled(false);
-    forward_mail->setEnabled(false);
-  }
-  message_tools->addAction(reply_mail);
-  message_tools->addAction(reply_all_mail);
-  message_tools->addAction(forward_mail);
+  message_tools->addAction(ui->actionReply);
+  message_tools->addAction(ui->actionReply_All);
+  message_tools->addAction(ui->actionForward);
   QWidget* spacer = new QWidget(message_tools);
   spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
   message_tools->addWidget(spacer);
-  message_tools->addAction(delete_mail);
+  message_tools->addAction(ui->actionDelete);
+
+  QAction* separator1 = new QAction(this);
+  separator1->setSeparator(true);
+  QAction* separator2 = new QAction(this);
+  separator2->setSeparator(true);
+
+  ui->inbox_table->addAction(ui->actionOpen);
+  ui->inbox_table->addAction(ui->actionMark_as_unread);
+  ui->inbox_table->addAction(separator1);
+  ui->inbox_table->addAction(ui->actionDelete);
+  ui->inbox_table->addAction(separator2);
+  ui->inbox_table->addAction(ui->actionReply);
+  ui->inbox_table->addAction(ui->actionReply_All);
+  ui->inbox_table->addAction(ui->actionForward);
+
+  ui->actionOpen->setEnabled(false);
+  ui->actionMark_as_unread->setEnabled(false);
+  ui->actionDelete->setEnabled(false);
+  ui->actionReply->setEnabled(false);
+  ui->actionReply_All->setEnabled(false);
+  ui->actionForward->setEnabled(false);
   }
 
 QModelIndex Mailbox::getSelectedMail()
@@ -287,12 +293,13 @@ void Mailbox::onDeleteMail()
   //model->setUpdatesEnabled(false);
   QItemSelectionModel*   selection_model = ui->inbox_table->selectionModel();
   QModelIndexList        sortFilterIndexes = selection_model->selectedRows();
-  if (sortFilterIndexes.count() == 0)
+  if (sortFilterIndexes.empty())
     return;
+
   if (QMessageBox::question(this, tr("Delete Mail"), tr("Are you sure you want to delete selected email(s)?")) == QMessageBox::Button::No)
     return;
   QModelIndexList indexes;
-  foreach(QModelIndex sortFilterIndex, sortFilterIndexes)
+  for(const QModelIndex& sortFilterIndex : sortFilterIndexes)
     indexes.append(model->mapToSource(sortFilterIndex));
   qSort(indexes);
   auto sourceModel = model->sourceModel();
@@ -414,55 +421,119 @@ bool Mailbox::getSelectedMessageData (IMailProcessor::TStoredMailMessage* encode
   return true;
 }
     
-Qt::SortOrder Mailbox::getSortOrder() const
-{
-  return ui->inbox_table->horizontalHeader()->sortIndicatorOrder();
-}
-
-int Mailbox::getSortedColumn() const 
-{
-  return ui->inbox_table->horizontalHeader()->sortIndicatorSection();
-}
-
 void Mailbox::selectAll ()
 {
   ui->inbox_table->selectAll();
   ui->inbox_table->setFocus();
 }
 
-void Mailbox::previewImages (QTextEdit* textEdit)
+void Mailbox::writeSettings()
 {
-  IMailProcessor::TPhysicalMailMessage decodedMsg;
-  IMailProcessor::TStoredMailMessage encodedMsg;
-  if (getSelectedMessageData (&encodedMsg, &decodedMsg) == false)
-    return;
+  QSettings settings("Invictus Innovations", "Keyhotee");
 
-  QTextDocument *doc = new QTextDocument();
-  //Don't eat multiple whitespaces
-  doc->setDefaultStyleSheet("p, li { white-space: pre-wrap; }");
-  doc->setHtml( decodedMsg.body.c_str() );
-  textEdit->setDocument (doc);
+  settings.beginGroup("MailBox");
+  //MailBox type
+  settings.beginGroup( QString::number(_type) );
+
+  settings.setValue("SortColumn", ui->inbox_table->horizontalHeader()->sortIndicatorSection());
+  settings.setValue("SortOrder", ui->inbox_table->horizontalHeader()->sortIndicatorOrder());
+  settings.setValue("SelectedColumns", encodeSelectedColumns());
   
-  QImage  image;
-  uchar  *imageData;
-  int     imageSize;
-  QString imageName;
+  settings.endGroup();
+  settings.endGroup();
+}
 
-  for (uint32_t i = 0; i < decodedMsg.attachments.size(); i++)
+void Mailbox::readSettings(MailTable::InitialSettings* initSettings)
+{
+  QSettings settings("Invictus Innovations", "Keyhotee");
+
+  settings.beginGroup("MailBox");
+  //MailBox type
+  settings.beginGroup( QString::number(_type) );  
+
+  initSettings->sortColumn = settings.value("SortColumn", QVariant(0)).toInt();
+  initSettings->sortOrder = static_cast<Qt::SortOrder>( settings.value("SortOrder", QVariant(0)).toInt() );
+
+  unsigned int columnsEncode = settings.value("SelectedColumns", QVariant(0)).toUInt();
+  decodeSelectedColumns(columnsEncode, &initSettings->columns);
+
+  settings.endGroup();
+  settings.endGroup();
+}
+
+unsigned int Mailbox::encodeSelectedColumns()
+{
+  QHeaderView* header = ui->inbox_table->horizontalHeader();
+  unsigned int columnsCount = header->count(); 
+  unsigned int selectedColumns = 0x0000;
+
+  //max columns = 32, 
+  //each column encode to one bit  
+  assert (selectedColumns * 8/*bits*/ < columnsCount);
+  for (unsigned int i = 0; i < columnsCount; ++i)
   {
-    imageName = QString("imageName.%1").arg(i);
-	  imageData = (uchar*)decodedMsg.attachments[i].body.data ();
-	  imageSize = decodedMsg.attachments[i].body.size();
-
-	  //QImageReader::supportedImageFormats()    
-	  bool loadOk = image.loadFromData(imageData, imageSize);
-    if (loadOk)
+    // physical index convsrt to logical index
+    int columnType = header->logicalIndex (i/*visualIndex*/);
+    if (!header->isSectionHidden(columnType) )
     {
-      doc->addResource( QTextDocument::ImageResource, QUrl( imageName ), image);
-      QString attachmentFileName = "<br/><hr><font color=""grey"">" + 
-                                    QString(decodedMsg.attachments[i].filename.c_str()) + 
-                                    "</font><br/>";
-      textEdit->append(attachmentFileName +  "<center><img src='" + imageName + "'></center>");
+      selectedColumns |= 1 << columnType;
     }
   }
+
+  return selectedColumns;
+}
+
+void Mailbox::decodeSelectedColumns(unsigned int columnsEncode, 
+                             QList<MailboxModel::Columns>* columnsDecode)
+{
+
+  for (unsigned int i = 0; i < MailboxModel::NumColumns; ++i)
+  {
+    if ( (1 << i) & columnsEncode )
+      columnsDecode->push_back(static_cast<MailboxModel::Columns>(i));
+  }
+}
+
+void Mailbox::getDefaultColumns(QList<MailboxModel::Columns>* defaultColumns)
+{
+  defaultColumns->push_back(MailboxModel::Read);
+  //defaultColumns->push_back(MailboxModel::Money);
+  defaultColumns->push_back(MailboxModel::Attachment);
+  //defaultColumns->push_back(MailboxModel::Reply);
+  //defaultColumns->push_back(MailboxModel::Chat);
+  defaultColumns->push_back(MailboxModel::From);
+  defaultColumns->push_back(MailboxModel::Subject);
+  //defaultColumns->push_back(MailboxModel::DateReceived);
+  defaultColumns->push_back(MailboxModel::To);
+  defaultColumns->push_back(MailboxModel::DateSent);
+  //defaultColumns->push_back(MailboxModel::Status);
+                                          
+  if (_type == Inbox)                     
+  {
+  }
+  else if (_type == Sent)
+  {
+    defaultColumns->push_back(MailboxModel::Status);
+  }
+  else if (_type == Drafts)
+  {
+  }
+  else if (_type == Outbox)
+  {
+    defaultColumns->push_back(MailboxModel::DateReceived);
+    defaultColumns->push_back(MailboxModel::Status);
+  }
+  else if(_type == Spam)
+  {
+  }
+}
+bool Mailbox::isIdentity()
+{
+  auto app = bts::application::instance();
+  auto profile = app->get_profile();
+  auto idents = profile->identities();
+  if (idents.empty())
+    return false;
+  else
+    return true;
 }

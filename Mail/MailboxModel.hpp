@@ -9,17 +9,18 @@ class MessageHeader;
 namespace Detail { class MailboxModelImpl; }
 
 class AddressBookModel;
+class QTreeWidgetItem;
 
 class MailboxModel : public QAbstractTableModel
 {
 public:
-  typedef IMailProcessor::TStoredMailMessage TStoredMailMessage;
+  typedef IMailProcessor::TStoredMailMessage                TStoredMailMessage;
 
   /** Class constructor.
       \param abModel - access to the main address book model, needed for message editing purposes
   */
   MailboxModel(QObject* parent, const bts::profile_ptr& user_profile,
-    bts::bitchat::message_db_ptr mail_db, AddressBookModel& abModel, bool isDraftFolder);
+    bts::bitchat::message_db_ptr mail_db, AddressBookModel& abModel, QTreeWidgetItem* tree_item, bool isDraftFolder);
   virtual ~MailboxModel();
 
   enum Columns
@@ -27,6 +28,7 @@ public:
     Read,
     Money,
     Attachment,
+    Reply,
     Chat,
     From,
     Subject,
@@ -45,7 +47,11 @@ public:
   void replaceMessage(const TStoredMailMessage& overwrittenMsg, const TStoredMailMessage& msg);
   void getFullMessage(const QModelIndex& index, MessageHeader& header) const;
   void markMessageAsRead(const QModelIndex& index);
+  void markMessageAsUnread(const QModelIndex& index);
+  void markMessageAsReplied(const QModelIndex& index);
+  void markMessageAsForwarded(const QModelIndex& index);
   QModelIndex findModelIndex(const TStoredMailMessage& msg) const;
+  QModelIndex findModelIndex(const fc::uint256& digest) const;
   /** Allows to retrieve given message data in encoded & decoded from.
       Encoded form (the message_header) is needed to retrieve sender for example.
       Decoded message contains all others attributes.
@@ -74,5 +80,15 @@ private:
 
   void readMailBoxHeadersDb(bts::bitchat::message_db_ptr mail_db);
 
+  void pushBack(const MessageHeader& mail_header);
+  void removeRow(int row_index);
+
+  void updateTreeItemDisplay();
+
+private:
   std::unique_ptr<Detail::MailboxModelImpl> my;
+
+  QTreeWidgetItem*    _tree_item;
+  unsigned int        _unread_msg_count;
+  const QString       _item_name;
 };

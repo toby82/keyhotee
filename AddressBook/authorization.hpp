@@ -1,12 +1,14 @@
 #ifndef AUTHORIZATION_H
 #define AUTHORIZATION_H
 
-#include <QWidget>
-#include <bts/profile.hpp>
+#include "ch/authprocessor.hpp"
+
 #include "keyhoteeidpubkeywidget.hpp"
 
+#include <QWidget>
+
 namespace Ui {
-class Authorization;
+class AuthorizationView;
 }
 class QToolBar;
 class AuthorizationItem;
@@ -17,12 +19,45 @@ class Authorization : public QWidget
   Q_OBJECT
 
 public:
-  explicit Authorization(QWidget *parent = 0);
+  typedef bts::bitchat::private_contact_request_message TRequestMessage;
+  typedef bts::bitchat::message_header                  THeaderStoredMsg;
+  typedef bts::bitchat::authorization_status            TAuthorizationStatus;
+  typedef bts::addressbook::wallet_contact              TWalletContact;
+  typedef bts::addressbook::wallet_identity             TWalletIdentity;
+  typedef bts::addressbook::authorization_status        TContAuthoStatus;
+
+  Authorization(IAuthProcessor& auth_processor, AddressBookModel* _addressbook_model,
+    const TRequestMessage& msg, const THeaderStoredMsg& header, QWidget *parent = 0);
   ~Authorization();
 
-  void setAddressBook(AddressBookModel* addressbook);
+  void processResponse();
 
-  void setMsg(const bts::bitchat::decrypted_message& msg);
+Q_SIGNALS:
+  void authorizationStatus(int wallet_index);
+
+protected:
+  void acceptExtendedPubKey() const;
+  void setAuthorizationStatus(TAuthorizationStatus status);
+
+protected:
+  IAuthProcessor&       _auth_processor;
+  TRequestMessage       _reqmsg;
+  THeaderStoredMsg      _header;
+  AddressBookModel*     _addressbook_model;
+};
+
+class AuthorizationView : public Authorization
+{
+  Q_OBJECT
+
+public:
+  typedef fc::ecc::public_key                             TPublicKey;
+  typedef bts::extended_public_key                        TExtendPubKey;
+
+  explicit AuthorizationView(IAuthProcessor& auth_processor, AddressBookModel* _addressbook_model,
+    const TRequestMessage& msg, const THeaderStoredMsg& header);
+  virtual ~AuthorizationView();
+
   void setOwnerItem(AuthorizationItem* item);
 
 Q_SIGNALS:
@@ -30,28 +65,32 @@ Q_SIGNALS:
   void itemBlockRequest (AuthorizationItem* item);
   void itemDenyRequest (AuthorizationItem* item);
 
+protected:
+  virtual void showEvent(QShowEvent *) override;
+
 public:
   void onAccept();
   void onDeny();
   void onBlock();
 
-private:
-  void addAsNewContact();
-
+private slots:
+  void onAddAsNewContact(bool checked);
   void onStateWidget(KeyhoteeIDPubKeyWidget::CurrentState state);
 
-  typedef bts::bitchat::decrypted_message TDecryptedMessage;
-  typedef fc::ecc::public_key             TPublicKey;
+private:
+  void addAsNewContact();
+  void genExtendedPubKey(std::string identity_dac_id, TExtendPubKey &extended_pub_key);
+  void sendReply(TAuthorizationStatus status);
 
-  Ui::Authorization *ui;
+private:
+  Ui::AuthorizationView *ui;
 
-  TDecryptedMessage     _msg;
+  TPublicKey            _from_pub_key;
   QToolBar*             _toolbar;
   QAction*              _accept;
   QAction*              _deny;
   QAction*              _block;
   AuthorizationItem*    _owner_item;
-  AddressBookModel*     _address_book;
 };
 
 #endif // AUTHORIZATION_H

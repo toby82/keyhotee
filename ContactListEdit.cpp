@@ -1,31 +1,55 @@
 #include "ContactListEdit.hpp"
 
-#include "utils.hpp"
-
-//#include "AddressBook/Contact.hpp"
 #include "KeyhoteeMainWindow.hpp"
+
 #include "AddressBook/AddressBookModel.hpp"
+#include "AddressBook/Contact.hpp"
+#include "AddressBook/ContactCompleterModel.hpp"
+
+#include "public_key_address.hpp"
 #include "utils.hpp"
 
 #include <QAbstractItemView>
+#include <QAbstractProxyModel>
+#include <QAbstractTextDocumentLayout>
 #include <QCompleter>
 #include <QKeyEvent>
 #include <QMimeData>
 #include <QPainter>
 #include <QScrollBar>
 #include <QTextBlock>
+#include <QTextDocumentFragment>
 #include <QToolTip>
 #include <QMenu>
 
 #include <fc/log/logger.hpp>
 
+class ContactListEdit::TAutoSkipCompletion
+  {
+  public:
+    TAutoSkipCompletion(ContactListEdit* edit) : _this(edit)
+      {
+      _this->_skipCompletion = true;
+      }
+
+    ~TAutoSkipCompletion()
+      {
+      _this->_skipCompletion = false;
+      }
+
+  private:
+    ContactListEdit* _this;
+  };
+
 ContactListEdit::ContactListEdit(QWidget* parent)
-  : QTextEdit(parent)
+  : QTextEdit(parent),
+  _addressBookModel(nullptr),
+  _completerModel(nullptr),
+  _skipCompletion(false)
   {
   _completer = nullptr;
-  _clicked_contact = new bts::addressbook::wallet_contact();
 
-  connect(this, &QTextEdit::textChanged, this, &ContactListEdit::fitHeightToDocument);
+  connect(this, &QTextEdit::textChanged, this, &ContactListEdit::onTextChanged);
 
   setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Preferred);
   fitHeightToDocument();
@@ -38,69 +62,52 @@ ContactListEdit::ContactListEdit(QWidget* parent)
   }
 
 ContactListEdit::~ContactListEdit()
-  {}
-
-void ContactListEdit::setCompleter(QCompleter* completer)
   {
-  if (_completer)
-    QObject::disconnect(_completer, 0, this, 0);
-  _completer = completer;
-
-  if (!_completer)
-    return;
-
-  _completer->setWidget(this);
-  _completer->setCompletionMode(QCompleter::PopupCompletion);
-  _completer->setCaseSensitivity(Qt::CaseInsensitive);
-  
-  _completions.clear();
-  for (int i = 0; _completer->setCurrentRow(i); i++)
-  {
-    _completions.push_back(_completer->currentCompletion());
-  }
-  _completer->setCurrentRow(-1);
-
-   connect(_completer, SIGNAL(activated(const QModelIndex&)),
-           this, SLOT(insertCompletion(const QModelIndex&)));
+  delete _completer;
+  _completer = nullptr;
+  delete _completerModel;
+  _completerModel = nullptr;
   }
 
-void ContactListEdit::insertCompletion( const QModelIndex& completionIndex )
+void ContactListEdit::insertCompletion(const QModelIndex& completionIndex)
   {
-  if( !completionIndex.isValid())
-    return;
-  QString completion = completionIndex.data().toString();
-  int row = completionIndex.data(Qt::UserRole).toInt();
-  row = row / 2;
-  //DLNFIX consider telling ContactListEdit about addressbookmodel some other way eventually
-  QModelIndex index = getKeyhoteeWindow()->getAddressBookModel()->index(row,0);
-  auto contact = getKeyhoteeWindow()->getAddressBookModel()->getContact(index);
-  insertCompletion(completion, contact);
-  }
-
-void ContactListEdit::insertCompletion( const QString& completion, const bts::addressbook::contact& c)
-  {
-  ilog( "insertCompletion ${c}", ("c", completion.toStdString() ) );
-  // remove existing text
-  // create image, attach meta data for on-click menus
-
-  if (_completer->widget() != this)
+  if(completionIndex.isValid() == false)
     return;
 
-  QTextCursor text_cursor = textCursor();
-  uint32_t    prefix_len = 0;
-  if (_completer->completionPrefix().length() > 0 && _prefixToDelete.length() > 0)
-    prefix_len = _prefixToDelete.length();
-  for (uint32_t i = 0; i < prefix_len; ++i)
-    text_cursor.deletePreviousChar();
+  TAutoSkipCompletion asc(this);
 
-  addContactEntry(completion, c);
+  QString completion = completionIndex.data(Qt::DisplayRole).toString();
+
+  ilog("insertCompletion got completion text: ${c}", ("c", completion.toStdString()));
+
+  /** \warning QCompleter passes here its index relative to ITS model which is a filtering one model.
+      Then this index depends on number of items displayed in completer window. Then index is smaller
+      when items are matched more strictly (0 in case just 1 row is matched).
+      To get actual index, it must be remapped but there is a lacking support in QCompleter API
+      to remap such index directly. Indead of cast is needed.
+      \see http://qt-project.org/forums/viewthread/26959 for details
+  */
+  const QAbstractItemModel* completionModel = completionIndex.model();
+  const QAbstractProxyModel* proxyModel = dynamic_cast<const QAbstractProxyModel*>(completionModel);
+  assert(proxyModel != nullptr);
+  QModelIndex sourceIndex = proxyModel->mapToSource(completionIndex);
+
+  const Contact& contact = _completerModel->getContact(sourceIndex);
+
+  assert(completion.toStdString() == contact.get_display_name());
+
+  ilog("insertCompletion chosen contact: ${c}", ("c", contact.get_display_name()));
+
+  deleteEnteredText();
+  addContactEntry(completion, contact, false);
   }
 
 void ContactListEdit::onCompleterRequest()
   {
   setFocus();
-  showCompleter(QString());
-  if(_completer->model()->rowCount() == 0)
+  initCompleter(QString());
+  showCompleter();
+  if(_completerModel->rowCount() == 0)
     {
     QRect pos = cursorRect();
     QToolTip::showText(mapToGlobal(pos.topLeft()), tr("There is no contact defined"));
@@ -108,54 +115,59 @@ void ContactListEdit::onCompleterRequest()
   }
 
 //! [5]
-QString ContactListEdit::textUnderCursor() const
+QString ContactListEdit::textUnderCursor(QTextCursor* filledCursor /*= nullptr*/) const
   {
   QTextCursor text_cursor = textCursor();
 
   int position_of_cursor = text_cursor.position();
 
-  if (! this->toPlainText().isEmpty())
+  QString text = toPlainText();
+
+  if (text.isEmpty() == false)
   {
-    do {
+    do
+      {
       text_cursor.movePosition ( QTextCursor::Left, QTextCursor::MoveAnchor);
       int pos_cursor = text_cursor.position();
-      QChar prev_char = this->toPlainText().at(pos_cursor);
+      QChar prev_char = text.at(pos_cursor);
       if (prev_char==QChar(QChar::ObjectReplacementCharacter))
         {
         text_cursor.movePosition ( QTextCursor::Right, QTextCursor::MoveAnchor);
         break;
         }
-    } while(text_cursor.position() != 0);
+      }
+    while(text_cursor.position() != 0);
   }
 
   text_cursor.setPosition(position_of_cursor, QTextCursor::KeepAnchor);
 
-  QString compilation_prefix = text_cursor.selectedText();
+  if(filledCursor != nullptr)
+    *filledCursor = text_cursor;
 
-  compilation_prefix = Utils::lTrim(compilation_prefix);
+  QString completionPrefix = text_cursor.selectedText();
 
-  _completer->setCompletionPrefix(compilation_prefix);
-  _prefixToDelete = compilation_prefix;
+  completionPrefix = Utils::lTrim(completionPrefix);
 
-  if (_completer->completionCount() == 0 && !compilation_prefix.isEmpty())
+  return completionPrefix;
+  }
+
+void ContactListEdit::deleteEnteredText()
   {
-    for (const QString& completion : _completions)
+  /// Since previously entered prefix has been accepted on completer list, it should be removed
+  if(_activeCursor.isNull() == false)
     {
-      if (completion.contains(compilation_prefix))
-      {
-        _completer->setCompletionPrefix(completion);
-        return completion;
-      }
+    _activeCursor.removeSelectedText();
+    _activeCursor = QTextCursor();
     }
   }
 
-  return compilation_prefix;
-  }
-
-void ContactListEdit::addContactEntry(const QString& contactText, const bts::addressbook::contact& c)
+void ContactListEdit::addContactEntry(const QString& contactText, const bts::addressbook::contact& c,
+  bool rawPublicKey, const QString* entryTooltip /*= nullptr*/)
   {
   QFont        default_font;
   default_font.setPointSize( default_font.pointSize() - 1 );
+  default_font.setBold(rawPublicKey);
+
   QFontMetrics font_metrics(default_font);
   QRect        bounding = font_metrics.boundingRect(contactText);
   int          completion_width = font_metrics.width(contactText);
@@ -172,9 +184,9 @@ void ContactListEdit::addContactEntry(const QString& contactText, const bts::add
 
   QBrush brush(Qt::SolidPattern);
   brush.setColor( QColor( 205, 220, 241 ) );
-  QPen  pen;
+  QPen  pen, textColorPen;
 
-  bool isKeyhoteeFounder = Contact::isKeyhoteeFounder(c);
+  bool isKeyhoteeFounder = rawPublicKey == false && Contact::isKeyhoteeFounder(c);
 
   if (isKeyhoteeFounder)
     {
@@ -201,15 +213,23 @@ void ContactListEdit::addContactEntry(const QString& contactText, const bts::add
     }
   else
     {
-    brush.setColor( QColor( 205, 220, 241 ) );
-    pen.setColor( QColor( 105,110,180 ) );
+    if(rawPublicKey)
+      {
+      brush.setColor(QColor(Qt::darkGreen));
+      textColorPen.setColor(QColor(Qt::white));
+      }
+    else
+      {
+      brush.setColor( QColor( 205, 220, 241 ) );
+      pen.setColor( QColor( 105,110,180 ) );
+      }
     }
 
   painter.setBrush(brush);
   painter.setPen(pen);
   painter.drawRoundedRect(0, 0, completion_width - 1, completion_image.height() - 1, 8, 8,
     Qt::AbsoluteSize);
-  painter.setPen(QPen());
+  painter.setPen(textColorPen);
   painter.drawText(QPoint(10, completion_height - 2), contactText);
 
   QTextDocument* doc = document();
@@ -219,10 +239,11 @@ void ContactListEdit::addContactEntry(const QString& contactText, const bts::add
 
   encodePublicKey(c.public_key, &format);
 
+  if(entryTooltip != nullptr)
+    format.setToolTip(*entryTooltip);
+
   QTextCursor txtCursor = textCursor();
   txtCursor.insertImage(format);
-
-  txtCursor.insertText(" ");
   setTextCursor(txtCursor);
   }
 
@@ -274,19 +295,22 @@ bool ContactListEdit::focusNextPrevChild(bool next)
 void ContactListEdit::keyPressEvent(QKeyEvent* key_event)
   {
   if (_completer && _completer->popup()->isVisible())
+    {
     // The following keys are forwarded by the completer to the widget
     switch (key_event->key())
       {
-    case Qt::Key_Enter:
-    case Qt::Key_Return:
-    case Qt::Key_Escape:
-    case Qt::Key_Tab:
-    case Qt::Key_Backtab:
-      key_event->ignore();
-      return;       // let the completer do default behavior
-    default:
-      break;
+      case Qt::Key_Enter:
+      case Qt::Key_Return:
+      case Qt::Key_Escape:
+      case Qt::Key_Tab:
+      case Qt::Key_Backtab:
+        key_event->ignore();
+        return;       // let the completer do default behavior
+      default:
+        break;
       }
+    }
+
   bool isShortcut = ((key_event->modifiers() & Qt::ControlModifier) && key_event->key() == Qt::Key_E);   // CTRL+E
   if (!_completer || !isShortcut)   // do not process the shortcut when we have a completer
     QTextEdit::keyPressEvent(key_event);
@@ -297,26 +321,46 @@ void ContactListEdit::keyPressEvent(QKeyEvent* key_event)
   if (!_completer || (ctrlOrShift && key_event->text().isEmpty()))
     return;
 
-  bool           hasModifier = (key_event->modifiers() != Qt::NoModifier) && !ctrlOrShift;
-  QString        completionPrefix = textUnderCursor();
+  bool    hasModifier = (key_event->modifiers() != Qt::NoModifier) && !ctrlOrShift;
+  QString completionPrefix = textUnderCursor();
 
-  if (!isShortcut && (hasModifier || key_event->text().isEmpty() || completionPrefix.length() == 0 ))
+  if (!isShortcut && (hasModifier || key_event->text().isEmpty() || completionPrefix.isEmpty() ))
     {
-    _prefixToDelete.clear();
     _completer->popup()->hide();
     return;
     }
-
-  showCompleter(completionPrefix);
   }
 
-void ContactListEdit::showCompleter(const QString& completionPrefix)
+void ContactListEdit::setAddressBookModel(AddressBookModel& abModel)
   {
+  assert(_addressBookModel == nullptr);
+  _addressBookModel = &abModel;
+  _completerModel = new TContactCompletionModel(&abModel);
+
+  //create completer from completion model
+  _completer = new QCompleter(_completerModel, this);
+
+  _completer->setWidget(this);
+  _completer->setCompletionMode(QCompleter::PopupCompletion);
+  _completer->setCaseSensitivity(Qt::CaseInsensitive);
+  _completer->setFilterMode(Qt::MatchFlag::MatchContains);
+  _completer->setWrapAround(true);
+
+   connect(_completer, SIGNAL(activated(const QModelIndex&)),
+           this, SLOT(insertCompletion(const QModelIndex&)));
+  }
+
+void ContactListEdit::initCompleter(const QString& completionPrefix)
+{
   if (completionPrefix != _completer->completionPrefix())
-    {
+  {
     _completer->setCompletionPrefix(completionPrefix);
     _completer->popup()->setCurrentIndex(_completer->completionModel()->index(0, 0));
-    }
+  }
+}
+
+void ContactListEdit::showCompleter()
+  {
   QRect cr = cursorRect();
   cr.setWidth(_completer->popup()->sizeHintForColumn(0)
               + _completer->popup()->verticalScrollBar()->sizeHint().width());
@@ -325,13 +369,16 @@ void ContactListEdit::showCompleter(const QString& completionPrefix)
 
 void ContactListEdit::SetCollectedContacts(const IMailProcessor::TRecipientPublicKeys& storage)
 {
+  TAutoSkipCompletion asc(this);
+
   for(const auto& recipient : storage)
   {
     assert(recipient.valid());
+    bool isKnownContact = false;
     bts::addressbook::contact matchingContact;
     QString entryText(Utils::toString(recipient, Utils::TContactTextFormatting::FULL_CONTACT_DETAILS,
-      &matchingContact));
-    addContactEntry(entryText, matchingContact);
+      &matchingContact, &isKnownContact));
+    addContactEntry(entryText, matchingContact, isKnownContact == false);
   }
 }
 
@@ -366,6 +413,104 @@ QSize ContactListEdit::sizeHint() const
   QSize sizehint = QTextEdit::sizeHint();
   //     sizehint.setHeight(_fitted_height);
   return sizehint;
+  }
+
+void ContactListEdit::onTextChanged()
+  {
+  /** Remember last changed text range in _activeCursor member. Will be used to replace entered text
+      whith contact entry.
+  */
+  QString text = textUnderCursor(&_activeCursor);
+
+  if(_skipCompletion == false && _completer != nullptr && isReadOnly() == false &&
+     text.isEmpty() == false)
+    {
+    TAutoSkipCompletion asc(this);
+    
+    std::string textKey = text.toStdString();
+
+    bts::addressbook::wallet_contact matchedContact;
+
+    bool contactFound = false;
+    /// Initializing _completer
+    initCompleter(text);
+    /** \warning Before checking _completer->completionCount() 
+        initCompleter method should be called.
+        Find the contact only when one completion exist,
+        (so contact will not be replaced with image control holding contact info)
+        because autocompletion didn't give suggestion if there were 2 contacts of same id
+    */
+    if (_completer->completionCount() == 1)
+    {
+      try
+      {
+        auto aBook = bts::get_profile()->get_addressbook();
+
+        auto contact = aBook->get_contact_by_display_name(textKey);
+        contactFound = contact.valid();
+        if (contactFound == false)
+          contact = aBook->get_contact_by_dac_id(textKey);
+
+        if (contact)
+        {
+          contactFound = true;
+          matchedContact = *contact;
+        }
+      }
+      catch (const fc::exception& e)
+      {
+        wlog("${e}", ("e", e.to_detail_string()));
+      }
+    }
+
+    bool semanticallyValidKey = false;
+    if (contactFound)
+      {
+      /// Delete previously entered text - will be replaced with image control holding contact info
+      deleteEnteredText();
+      /// Update PK-like text with displayed form
+      text = QString::fromStdString(matchedContact.get_display_name());
+      /// If text already points to some found contact, just add it
+      addContactEntry(text, matchedContact, false);
+      }
+    else
+    if(public_key_address::is_valid(textKey, &semanticallyValidKey) && semanticallyValidKey)
+      {
+      /// Delete previously entered text - will be replaced with image control holding contact info
+      deleteEnteredText();
+
+      public_key_address converter(textKey);
+      fc::ecc::public_key parsedKey = converter.key;
+      
+      if(Utils::matchContact(parsedKey, &matchedContact))
+        {
+        QString displayText = _completerModel->getDisplayText(Contact(matchedContact));
+        addContactEntry(displayText, matchedContact, false);
+
+        QString txt = tr("Known public key has been replaced with matching contact...");
+        /// Don't pass here parent widget to avoid switching active window when tooltip appears
+        QToolTip::showText(QCursor::pos(), txt, nullptr, QRect(), 3000);
+        }
+      else
+        {
+        QString tooltip = tr("Valid, but <b>unknown</b> public key, cannot be matched to any contact "
+          "present in address book...");
+        addContactEntry(text, matchedContact, true, &tooltip);
+        }
+      }
+    else
+      {
+      QTextCharFormat fmt;
+      fmt.setFontWeight(QFont::Bold);
+      fmt.setForeground(QColor(Qt::red));
+      fmt.setToolTip(tr("Unknown contact - can be <b>ignored</b> while sending message"));
+      _activeCursor.mergeCharFormat(fmt);
+
+      showCompleter();
+      }
+    }
+
+  fitHeightToDocument();
   }
 
 void ContactListEdit::fitHeightToDocument()
@@ -425,8 +570,6 @@ QMimeData *ContactListEdit::createMimeDataFromSelection() const
 
 void ContactListEdit::contextMenuEvent ( QContextMenuEvent * event )
 {
-  _right_click = event->pos();
-  
   QMenu *menu = createStandardContextMenu();
 
   QAction* sep = new QAction(this);
@@ -445,16 +588,13 @@ void ContactListEdit::contextMenuEvent ( QContextMenuEvent * event )
 
   if(textCursor().selection().isEmpty())
   {
-    if(isClickOnContact())
+    bool isExistingContact = false;
+    if(validateClickPosition(event->pos(), &isExistingContact, &_clicked_contact))
     {
-      if(isStoredContact())
-      {
+      if(isExistingContact)
         action_find_contact->setEnabled(true);
-      }
       else
-      {
         action_add_contact->setEnabled(true);
-      }
     }
   }
   
@@ -462,10 +602,18 @@ void ContactListEdit::contextMenuEvent ( QContextMenuEvent * event )
   delete menu;
 }
 
-bool ContactListEdit::isClickOnContact()
+bool ContactListEdit::validateClickPosition(const QPoint& position, bool* isExistingContact,
+  bts::addressbook::wallet_contact* foundContact) const
 {
-  _right_click += QPoint(2, 0);
-  int current_position = this->document()->documentLayout()->hitTest( _right_click, Qt::ExactHit );
+  assert(isExistingContact != nullptr);
+  assert(foundContact != nullptr);
+
+  *isExistingContact = false;
+
+  QPoint shiftedPos(position);
+  shiftedPos += QPoint(2, 0);
+
+  int current_position = document()->documentLayout()->hitTest(shiftedPos, Qt::ExactHit);
 
   if(current_position > -1)
   {
@@ -475,16 +623,20 @@ bool ContactListEdit::isClickOnContact()
       for(QTextBlock::iterator it = current_block.begin(); !(it.atEnd()); ++it)
       {
         QTextFragment current_fragment = it.fragment();
-        if(current_fragment.isValid())
-          if(current_fragment.contains(current_position))
+        if(current_fragment.isValid() && current_fragment.contains(current_position))
+        {
+          QTextFormat current_format = current_fragment.charFormat();
+          if(current_format.isImageFormat())
           {
-            QTextFormat current_format = current_fragment.charFormat();
-            if(current_format.isImageFormat())
-            {
-              _image_format = current_format.toImageFormat();
-              return true;
-            }
+            QTextImageFormat imageFormat = current_format.toImageFormat();
+
+            IMailProcessor::TRecipientPublicKey pk;
+            decodePublicKey(imageFormat, &pk);
+            *isExistingContact = Utils::matchContact(pk, foundContact);
+
+            return true;
           }
+        }
       }
       current_block = current_block.next();
     }
@@ -492,19 +644,6 @@ bool ContactListEdit::isClickOnContact()
 
   return false;
 }
-
-bool ContactListEdit::isStoredContact()
-{
-  if(_image_format.isValid())
-  {
-    IMailProcessor::TRecipientPublicKey pk;
-    decodePublicKey(_image_format, &pk);
-    if(Utils::matchContact(pk, _clicked_contact))
-      return true;
-  }
-  return false;
-}
-
 
 void ContactListEdit::onActiveAddContact()
 {
@@ -514,6 +653,6 @@ void ContactListEdit::onActiveAddContact()
 
 void ContactListEdit::onActiveFindContact()
 {
-  getKeyhoteeWindow()->openContactGui(_clicked_contact->wallet_index);
+  getKeyhoteeWindow()->openContactGui(_clicked_contact.wallet_index);
   getKeyhoteeWindow()->activateMainWindow();
 }

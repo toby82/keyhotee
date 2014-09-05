@@ -15,19 +15,21 @@ class KeyhoteeIDPubKeyWidget : public QWidget
 
 public:
   explicit KeyhoteeIDPubKeyWidget(QWidget *parent = 0);
-  ~KeyhoteeIDPubKeyWidget();
+  virtual ~KeyhoteeIDPubKeyWidget();
 
   enum CurrentState{
     InvalidData,
     OkKeyhoteeID,
     OkPubKey,
-    IsStored
+    IsStored,
+    IsIdentity
   };
 
   enum ModeWidget{
     ShowContact,
     AddContact,
-    RequestAuthorization
+    RequestAuthorization,
+    AuthorizationView
   };
 
   void setAddressBook(AddressBookModel* address_book);
@@ -39,34 +41,37 @@ public:
 
   void setKeyhoteeID(const QString& keyhotee_id);
   void setPublicKey(const QString& public_key_string);
-  void showCopyToClipboard(bool visible);
+  void hideCopyKeysToClipboard();
   void setMode(ModeWidget mode = ShowContact) {_my_mode = mode;};
   void setEditable(bool editable);
 
   fc::ecc::public_key getPublicKey();
   QString getPublicKeyText();
   QString getKeyhoteeID();
+  // override to focused first widget in the KeyhoteeIDPubKeyWidget
+  void setFocus(Qt::FocusReason reason);
 
 private:
+  bool isLookupThreadActive() const;
+  void cancelLookupThread();
+
   Ui::KeyhoteeIDPubKeyWidget *ui;
 
   bool existContactWithPublicKey (const std::string& public_key_string);
 
-  fc::time_point                          _last_validate;
   Contact                                 _current_contact;
   fc::optional<bts::bitname::name_record> _current_record;
   AddressBookModel*                       _address_book;
   ModeWidget                              _my_mode;
+  fc::future<void>                        _lookupThreadState;
 
 Q_SIGNALS:
   void currentState(CurrentState state);
 
 private slots:
-  void keyhoteeIdChanged(const QString& name);
   void keyhoteeIdEdited(const QString& keyhotee_id);
-  void publicKeyChanged(const QString& name);
   void publicKeyEdited(const QString& public_key_string);
+  void on_private_key_to_clipboard_clicked();
 
   bool event(QEvent *e);
 };
-

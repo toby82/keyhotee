@@ -180,9 +180,10 @@ MenuEditControl::MenuEditControl(QObject *parent, QAction *actionCopy, QAction *
 :  QObject(parent), 
   _actionCopy (actionCopy),
   _actionCut (actionCut),
-  _actionPaste (actionPaste)
+  _actionPaste (actionPaste),
+  _isClosingApp(false)
 {
-  _currentWidget = nullptr;
+  _currentWidget = nullptr;  
   _textDocs.push_back(new MenuEditControl::TextEdit(this) );
   _textDocs.push_back(new MenuEditControl::LineEdit(this) );
   _textDocs.push_back(new MenuEditControl::PlainTextEdit(this) );
@@ -196,6 +197,9 @@ MenuEditControl::~MenuEditControl()
 
 void MenuEditControl::copy() const
 {
+  if (_isClosingApp == true)
+    return;
+
   KeyhoteeMainWindow* mainWin = getKeyhoteeWindow();
   QWidget *focused = mainWin->focusWidget ();
 
@@ -214,6 +218,9 @@ void MenuEditControl::copy() const
 
 void MenuEditControl::cut()
 {
+  if (_isClosingApp == true)
+    return;
+
   KeyhoteeMainWindow* mainWin = getKeyhoteeWindow();
   QWidget *focused = mainWin->focusWidget ();
 
@@ -232,6 +239,9 @@ void MenuEditControl::cut()
 
 void MenuEditControl::paste()
 {
+  if (_isClosingApp == true)
+    return;
+
   KeyhoteeMainWindow* mainWin = getKeyhoteeWindow();
   QWidget *focused = mainWin->focusWidget ();
 
@@ -250,6 +260,9 @@ void MenuEditControl::paste()
 
 void MenuEditControl::selectAll()
 {
+  if (_isClosingApp == true)
+    return;
+
   KeyhoteeMainWindow* mainWin = getKeyhoteeWindow();
   QWidget *focused = mainWin->focusWidget ();
 
@@ -274,12 +287,19 @@ void MenuEditControl::selectAll()
   }
 }
 
-void MenuEditControl::setEnabled(QWidget *old, QWidget *now)
+void MenuEditControl::onFocusChanged(QWidget *old, QWidget *now)
 {  
+  if (_isClosingApp == true)
+    return;
+
   bool selectedText = false;
   bool rCanCut = false;
   
   selectedText = isSelected(now, rCanCut);
+
+  if (_actionCopy == nullptr || _actionCut == nullptr || _actionPaste == nullptr)
+    return;
+
   _actionCopy->setEnabled(selectedText);
   _actionCut->setEnabled(rCanCut);
   _actionPaste->setEnabled(false);
@@ -308,6 +328,9 @@ void MenuEditControl::setEnabled(QWidget *old, QWidget *now)
 
 void MenuEditControl::onSelectionChanged()
 {
+  if (_isClosingApp == true)
+    return;
+
   bool rCanCut = false;
   bool selectedText = isSelected(_currentWidget, rCanCut);
   _actionCopy->setEnabled(selectedText);
@@ -332,7 +355,7 @@ bool MenuEditControl::isSelected(QWidget* focused, bool& canCut) const
   //contact list
   if(focused == getKeyhoteeWindow()->getContactsPage()->getContactsTableWidget())
   {    
-    //enable/disable menu in the: void KeyhoteeMainWindow::refreshEditMenu() 
+    //enable/disable menu in the: void KeyhoteeMainWindow::refreshMenuOptions() 
     selectedText = true;     
   }
   else
@@ -371,4 +394,9 @@ bool MenuEditControl::connectSelectionChangedSignal(bool fConnect, QWidget* widg
   }
 
   return false;
+}
+
+void MenuEditControl::onClosingApp()
+{
+  _isClosingApp = true;
 }
